@@ -63,9 +63,14 @@ button:disabled { opacity: .52; cursor: not-allowed; }
   padding: 9px 12px;
   color: var(--ink) !important;
   font-size: 14px !important;
+  width: 100%;
+  justify-content: flex-start;
+  border-color: transparent;
+  background: transparent;
 }
 .side-link.active {
   background: var(--brand);
+  border-color: var(--brand);
   color: #fff !important;
 }
 .app-content { min-height: 100vh; }
@@ -133,7 +138,7 @@ button:disabled { opacity: .52; cursor: not-allowed; }
 .summary-bar span { display: block; color: var(--muted); font-size: 13px; margin-bottom: 6px; }
 .summary-bar b { font-size: 23px; font-weight: 650; }
 
-.login-panel, .workspace {
+.login-panel, .workspace, .page-workspace {
   padding: 0 20px 56px;
 }
 .login-panel {
@@ -164,6 +169,16 @@ button:disabled { opacity: .52; cursor: not-allowed; }
   border-radius: 6px;
   padding: 18px;
 }
+.page-workspace {
+  display: block;
+}
+.page-workspace > .result-pane,
+.billing-page {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 18px;
+}
 .section-title {
   display: flex;
   justify-content: space-between;
@@ -172,6 +187,11 @@ button:disabled { opacity: .52; cursor: not-allowed; }
   margin-bottom: 16px;
 }
 .section-title h2 { margin: 0; font-size: 18px; font-weight: 650; }
+.section-title p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 14px;
+}
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .actions button, .actions .download { min-height: 34px; font-size: 13px; }
 .active {
@@ -286,9 +306,13 @@ tbody tr:hover { background: var(--panel); }
   border-radius: 6px;
   min-height: 260px;
   display: grid;
+  gap: 12px;
   place-items: center;
   color: var(--muted);
+  text-align: center;
+  padding: 20px;
 }
+.empty.small { min-height: 96px; }
 
 .modal-backdrop {
   position: fixed;
@@ -346,6 +370,38 @@ tbody tr:hover { background: var(--panel); }
   gap: 8px;
 }
 .payment-box span { color: var(--muted); }
+.payment-history {
+  margin-top: 20px;
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+}
+.payment-history h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+.payment-list {
+  display: grid;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.payment-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.payment-row:last-child { border-bottom: 0; }
+.payment-row div {
+  display: grid;
+  gap: 4px;
+}
+.payment-row div:last-child { text-align: right; }
+.payment-row span {
+  color: var(--muted);
+  font-size: 13px;
+}
 .breakdown {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -405,4 +461,8 @@ article span { color: var(--muted); font-size: 14px; }
   .summary-bar, .grade-strip, .package-grid, .breakdown, .detail-grid { grid-template-columns: 1fr; }
   .section-title { align-items: stretch; flex-direction: column; }
   .actions button, .actions .download { flex: 1 1 130px; }
+  .payment-row {
+    display: grid;
+  }
+  .payment-row div:last-child { text-align: left; }
 }

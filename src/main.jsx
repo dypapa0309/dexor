@@ -12,10 +12,12 @@ import {
 import './styles.css';
 
 const API = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
+const API_BASE = `${API}/api`;
 const gradeLabels = { S: '바로 선정', A: '선정 가능', B: '보류', C: '제외 권장', D: '사용 금지' };
 const gradeOrder = { S: 0, A: 1, B: 2, C: 3, D: 4 };
 
 function App() {
+  const [page, setPage] = useState('analysis');
   const [me, setMe] = useState({ user: null, credits: null });
   const [dashboard, setDashboard] = useState(null);
   const [packages, setPackages] = useState([]);
@@ -57,9 +59,9 @@ function App() {
   useEffect(() => {
     if (!job || job.status === 'completed' || job.status === 'failed') return;
     const timer = setInterval(async () => {
-      const nextJob = await apiJson(`${API}/jobs/${job.id}`);
+      const nextJob = await apiJson(`${API_BASE}/jobs/${job.id}`);
       setJob(nextJob);
-      const payload = await apiJson(`${API}/results/${job.id}`);
+      const payload = await apiJson(`${API_BASE}/results/${job.id}`);
       setResults(payload.results);
       if (nextJob.status === 'completed' || nextJob.status === 'failed') {
         await refreshMe();
@@ -104,26 +106,26 @@ function App() {
   }
 
   async function refreshMe() {
-    const payload = await apiJson(`${API}/me`).catch(() => ({ user: null, credits: null }));
+    const payload = await apiJson(`${API_BASE}/me`).catch(() => ({ user: null, credits: null }));
     setMe(payload);
     return payload;
   }
 
   async function refreshDashboard() {
-    const payload = await apiJson(`${API}/dashboard`).catch(() => null);
+    const payload = await apiJson(`${API_BASE}/dashboard`).catch(() => null);
     setDashboard(payload);
   }
 
   async function refreshBilling() {
-    const packagePayload = await apiJson(`${API}/billing/packages`).catch(() => ({ packages: [] }));
-    const paymentPayload = await apiJson(`${API}/billing/payments`).catch(() => ({ payments: [] }));
+    const packagePayload = await apiJson(`${API_BASE}/billing/packages`).catch(() => ({ packages: [] }));
+    const paymentPayload = await apiJson(`${API_BASE}/billing/payments`).catch(() => ({ payments: [] }));
     setPackages(packagePayload.packages);
     setPayments(paymentPayload.payments);
     setPendingPayment(paymentPayload.payments.find((payment) => payment.status === 'waiting_for_deposit') || null);
   }
 
   async function logout() {
-    await apiJson(`${API}/auth/logout`, { method: 'POST' });
+    await apiJson(`${API_BASE}/auth/logout`, { method: 'POST' });
     setMe({ user: null, credits: null });
     setDashboard(null);
     setResults([]);
@@ -142,9 +144,10 @@ function App() {
       const form = new FormData();
       form.append('urls', bulkText);
       if (file) form.append('file', file);
-      const nextJob = await apiJson(`${API}/analyze/bulk`, { method: 'POST', body: form });
+      const nextJob = await apiJson(`${API_BASE}/analyze/bulk`, { method: 'POST', body: form });
       setResults([]);
       setJob(nextJob);
+      setPage('results');
       await refreshMe();
     } catch (err) {
       handleAnalysisError(err);
@@ -162,13 +165,14 @@ function App() {
     setBusy(true);
     setError('');
     try {
-      const nextJob = await apiJson(`${API}/analyze/deep`, {
+      const nextJob = await apiJson(`${API_BASE}/analyze/deep`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ urls }),
       });
       setResults([]);
       setJob(nextJob);
+      setPage('results');
       await refreshMe();
     } catch (err) {
       handleAnalysisError(err);
@@ -181,7 +185,7 @@ function App() {
     setBusy(true);
     setError('');
     try {
-      const payload = await apiJson(`${API}/billing/checkout/virtual-account`, {
+      const payload = await apiJson(`${API_BASE}/billing/checkout/virtual-account`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ packageId: selectedPackage }),
@@ -205,7 +209,7 @@ function App() {
   }
 
   async function confirmTossPayment({ paymentKey, orderId, amount }) {
-    const payload = await apiJson(`${API}/billing/toss/success`, {
+    const payload = await apiJson(`${API_BASE}/billing/toss/success`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ paymentKey, orderId, amount }),
@@ -222,7 +226,7 @@ function App() {
     setError('');
     try {
       const payment = payments.find((item) => item.orderId === pendingPayment.orderId) || pendingPayment;
-      await apiJson(`${API}/webhooks/toss/deposit`, {
+      await apiJson(`${API_BASE}/webhooks/toss/deposit`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -241,6 +245,11 @@ function App() {
   }
 
   const progress = job && job.total ? Math.round((job.completed / job.total) * 100) : 0;
+  const pageTitle = {
+    analysis: '분석',
+    results: '결과',
+    billing: '결제',
+  }[page];
 
   return (
     <main className="app-shell">
@@ -250,22 +259,22 @@ function App() {
           <span>JASAIN 프로그램</span>
         </div>
         <nav className="side-nav">
-          <span className="side-link active">분석</span>
-          <span className="side-link">결과</span>
-          <span className="side-link">결제</span>
+          <button className={page === 'analysis' ? 'side-link active' : 'side-link'} onClick={() => setPage('analysis')}>분석</button>
+          <button className={page === 'results' ? 'side-link active' : 'side-link'} onClick={() => setPage('results')}>결과</button>
+          <button className={page === 'billing' ? 'side-link active' : 'side-link'} onClick={() => setPage('billing')}>결제</button>
         </nav>
       </aside>
 
       <section className="app-content">
         <header className="topbar">
           <div>
-            <h1>분석</h1>
+            <h1>{pageTitle}</h1>
             <p>{me.user ? `${me.user.email} · DEXOR by JASAIN` : 'DEXOR by JASAIN'}</p>
           </div>
         {me.user ? (
           <nav>
             <span className="credit-pill"><Wallet size={16} /> {me.credits?.remaining ?? 0} 크레딧</span>
-            <button onClick={() => setBillingOpen(true)}>충전</button>
+            <button onClick={() => setPage('billing')}>충전</button>
             <button onClick={logout}><LogOut size={16} /> 로그아웃</button>
           </nav>
         ) : null}
@@ -287,7 +296,7 @@ function App() {
 
       {!me.user ? (
         <LoginPanel />
-      ) : (
+      ) : page === 'analysis' ? (
         <section className="workspace">
           <div className="input-pane">
             <div className="section-title">
@@ -323,18 +332,51 @@ function App() {
           </div>
 
           <div className="result-pane">
-            <div className="section-title">
-              <h2>결과</h2>
-              <div className="actions">
-                <button onClick={() => setOnlySA((value) => !value)} className={onlySA ? 'active' : ''}><Filter size={16} /> S/A</button>
-                <button onClick={() => setHideCD((value) => !value)} className={hideCD ? 'active' : ''}>C/D 숨김</button>
-                <button onClick={startDeep} disabled={!results.length || busy}><CheckCircle2 size={16} /> 정밀 분석</button>
-                <a className="download" href={`${API}/export${job ? `?jobId=${job.id}` : ''}`}><Download size={16} /> 다운로드</a>
-              </div>
-            </div>
-            <GradeStrip summary={summary} />
-            <ResultsTable rows={filteredResults} onOpen={setSelected} />
+            <ResultsPanel
+              summary={summary}
+              rows={filteredResults}
+              onlySA={onlySA}
+              hideCD={hideCD}
+              onToggleSA={() => setOnlySA((value) => !value)}
+              onToggleCD={() => setHideCD((value) => !value)}
+              onDeep={startDeep}
+              onOpen={setSelected}
+              busy={busy}
+              job={job}
+              compact
+            />
           </div>
+        </section>
+      ) : page === 'results' ? (
+        <section className="page-workspace">
+          <div className="result-pane">
+            <ResultsPanel
+              summary={summary}
+              rows={filteredResults}
+              onlySA={onlySA}
+              hideCD={hideCD}
+              onToggleSA={() => setOnlySA((value) => !value)}
+              onToggleCD={() => setHideCD((value) => !value)}
+              onDeep={startDeep}
+              onOpen={setSelected}
+              busy={busy}
+              job={job}
+              onAnalyze={() => setPage('analysis')}
+            />
+          </div>
+        </section>
+      ) : (
+        <section className="page-workspace">
+          <BillingView
+            packages={packages}
+            selectedPackage={selectedPackage}
+            onSelect={setSelectedPackage}
+            onCreate={createVirtualAccount}
+            onDeposit={simulateDeposit}
+            busy={busy}
+            payment={pendingPayment}
+            payments={payments}
+          />
         </section>
       )}
       </section>
@@ -365,8 +407,8 @@ function LoginPanel() {
         <p>크레딧 잔액, 결제 상태, 분석 결과를 계정 단위로 안전하게 관리합니다.</p>
       </div>
       <div className="login-actions">
-        <a className="primary" href={`${API}/auth/naver/start`}>네이버로 시작</a>
-        <a href={`${API}/auth/google/start`}>구글로 시작</a>
+        <a className="primary" href={`${API_BASE}/auth/naver/start`}>네이버로 시작</a>
+        <a href={`${API_BASE}/auth/google/start`}>구글로 시작</a>
       </div>
     </section>
   );
@@ -386,8 +428,49 @@ function GradeStrip({ summary }) {
   );
 }
 
-function ResultsTable({ rows, onOpen }) {
-  if (!rows.length) return <div className="empty">분석 결과가 여기에 표시됩니다.</div>;
+function ResultsPanel({
+  summary,
+  rows,
+  onlySA,
+  hideCD,
+  onToggleSA,
+  onToggleCD,
+  onDeep,
+  onOpen,
+  busy,
+  job,
+  onAnalyze,
+  compact = false,
+}) {
+  return (
+    <>
+      <div className="section-title">
+        <div>
+          <h2>결과</h2>
+          {!compact && <p>높은 등급부터 정렬해 바로 검토할 수 있습니다.</p>}
+        </div>
+        <div className="actions">
+          <button onClick={onToggleSA} className={onlySA ? 'active' : ''}><Filter size={16} /> S/A</button>
+          <button onClick={onToggleCD} className={hideCD ? 'active' : ''}>C/D 숨김</button>
+          <button onClick={onDeep} disabled={!rows.length || busy}><CheckCircle2 size={16} /> 정밀 분석</button>
+          <a className="download" href={`${API_BASE}/export${job ? `?jobId=${job.id}` : ''}`}><Download size={16} /> 다운로드</a>
+        </div>
+      </div>
+      <GradeStrip summary={summary} />
+      <ResultsTable rows={rows} onOpen={onOpen} onAnalyze={onAnalyze} />
+    </>
+  );
+}
+
+function ResultsTable({ rows, onOpen, onAnalyze }) {
+  if (!rows.length) {
+    return (
+      <div className="empty">
+        <span>분석을 시작하면 결과가 여기에 표시됩니다.</span>
+        {onAnalyze && <button onClick={onAnalyze}>분석하러 가기</button>}
+      </div>
+    );
+  }
   return (
     <div className="table-wrap">
       <table>
@@ -418,6 +501,51 @@ function ResultsTable({ rows, onOpen }) {
   );
 }
 
+function BillingView({ packages, selectedPackage, onSelect, onCreate, onDeposit, busy, payment, payments }) {
+  const activePayment = payment || payments.find((item) => item.status === 'waiting_for_deposit');
+  const packageNames = Object.fromEntries(packages.map((item) => [item.id, item.name]));
+  return (
+    <div className="billing-page">
+      <div className="section-title">
+        <div>
+          <h2>크레딧 충전</h2>
+          <p>분석에 필요한 크레딧을 가상계좌로 충전합니다.</p>
+        </div>
+      </div>
+      <BillingContent
+        packages={packages}
+        selectedPackage={selectedPackage}
+        onSelect={onSelect}
+        onCreate={onCreate}
+        onDeposit={onDeposit}
+        busy={busy}
+        activePayment={activePayment}
+      />
+      <section className="payment-history">
+        <h3>결제 내역</h3>
+        {payments.length === 0 ? (
+          <div className="empty small">아직 결제 내역이 없습니다.</div>
+        ) : (
+          <div className="payment-list">
+            {payments.map((item) => (
+              <div className="payment-row" key={item.orderId}>
+                <div>
+                  <b>{packageNames[item.packageId] || '크레딧 상품'}</b>
+                  <span>{item.orderId}</span>
+                </div>
+                <div>
+                  <b>{paymentStatus(item.status)}</b>
+                  <span>{item.credits?.toLocaleString()}크레딧 · {item.amount?.toLocaleString()}원</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 function BillingPanel({ packages, selectedPackage, onSelect, onClose, onCreate, onDeposit, busy, payment, payments }) {
   const activePayment = payment || payments.find((item) => item.status === 'waiting_for_deposit');
   return (
@@ -430,29 +558,53 @@ function BillingPanel({ packages, selectedPackage, onSelect, onClose, onCreate, 
           </div>
           <button onClick={onClose}>닫기</button>
         </div>
-        <div className="package-grid">
-          {packages.map((item) => (
-            <button key={item.id} className={selectedPackage === item.id ? 'package selected' : 'package'} onClick={() => onSelect(item.id)}>
-              <b>{item.name}</b>
-              <span>{item.amount.toLocaleString()}원</span>
-            </button>
-          ))}
-        </div>
-        <button className="primary full" onClick={onCreate} disabled={busy}>가상계좌 발급</button>
-        {activePayment && (
-          <div className="payment-box">
-            <b>{activePayment.status === 'paid' ? '충전 완료' : '입금 대기'}</b>
-            <span>주문번호 {activePayment.orderId}</span>
-            <span>{activePayment.credits?.toLocaleString()}크레딧 · {activePayment.amount?.toLocaleString()}원</span>
-            {activePayment.virtualAccount && (
-              <span>계좌 {activePayment.virtualAccount.bankCode || '은행'} {activePayment.virtualAccount.accountNumber}</span>
-            )}
-            {activePayment.status !== 'paid' && <button onClick={onDeposit} disabled={busy}>테스트 입금 완료 처리</button>}
-          </div>
-        )}
+        <BillingContent
+          packages={packages}
+          selectedPackage={selectedPackage}
+          onSelect={onSelect}
+          onCreate={onCreate}
+          onDeposit={onDeposit}
+          busy={busy}
+          activePayment={activePayment}
+        />
       </div>
     </div>
   );
+}
+
+function BillingContent({ packages, selectedPackage, onSelect, onCreate, onDeposit, busy, activePayment }) {
+  return (
+    <>
+      <div className="package-grid">
+        {packages.map((item) => (
+          <button key={item.id} className={selectedPackage === item.id ? 'package selected' : 'package'} onClick={() => onSelect(item.id)}>
+            <b>{item.name}</b>
+            <span>{item.amount.toLocaleString()}원</span>
+          </button>
+        ))}
+      </div>
+      <button className="primary full" onClick={onCreate} disabled={busy}>가상계좌 발급</button>
+      {activePayment && (
+        <div className="payment-box">
+          <b>{activePayment.status === 'paid' ? '충전 완료' : '입금 대기'}</b>
+          <span>주문번호 {activePayment.orderId}</span>
+          <span>{activePayment.credits?.toLocaleString()}크레딧 · {activePayment.amount?.toLocaleString()}원</span>
+          {activePayment.virtualAccount && (
+            <span>계좌 {activePayment.virtualAccount.bankCode || '은행'} {activePayment.virtualAccount.accountNumber}</span>
+          )}
+          {activePayment.status !== 'paid' && <button onClick={onDeposit} disabled={busy}>테스트 입금 완료 처리</button>}
+        </div>
+      )}
+    </>
+  );
+}
+
+function paymentStatus(status) {
+  return {
+    waiting_for_deposit: '입금 대기',
+    paid: '충전 완료',
+    failed: '결제 실패',
+  }[status] || status;
 }
 
 function DetailModal({ result, onClose }) {
