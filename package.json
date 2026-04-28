@@ -1,0 +1,38 @@
+{
+  "name": "dexor",
+  "version": "1.0.0",
+  "description": "DEXOR Naver blog selection automation SaaS MVP",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "dev": "concurrently \"npm run server\" \"npm run client\"",
+    "server": "node server/index.js",
+    "client": "vite --host 127.0.0.1 --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "check": "npm run build"
+  },
+  "keywords": [
+    "naver",
+    "blog",
+    "saas",
+    "marketing"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.0.4",
+    "concurrently": "^9.2.1",
+    "vite": "^7.1.9",
+    "typescript": "^5.9.3",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "lucide-react": "^0.545.0",
+    "express": "^5.1.0",
+    "cors": "^2.8.5",
+    "multer": "^2.0.2",
+    "jszip": "^3.10.1",
+    "fast-xml-parser": "^5.3.0"
+  },
+  "devDependencies": {}
+}
