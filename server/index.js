@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
@@ -24,6 +24,8 @@ const CREDIT_PACKAGES = [
 ];
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const appRoot = join(__dirname, '..');
+const distDir = join(appRoot, 'dist');
 const dataDir = join(__dirname, '..', 'data');
 mkdirSync(dataDir, { recursive: true });
 const db = new DatabaseSync(join(dataDir, 'dexor.sqlite'));
@@ -857,6 +859,15 @@ app.post('/api/webhooks/toss/deposit', (req, res) => {
   res.json({ ok: true });
 });
 
-app.listen(PORT, () => {
+if (existsSync(distDir)) {
+  app.use(express.static(distDir));
+  app.use((req, res, next) => {
+    if (req.path.startsWith('/api')) return next();
+    res.sendFile(join(distDir, 'index.html'));
+  });
+}
+
+const server = app.listen(PORT, () => {
   console.log(`DEXOR API running on http://127.0.0.1:${PORT}`);
 });
+server.ref();

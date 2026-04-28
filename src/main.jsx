@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import './styles.css';
 
-const API = '/api';
+const API = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const gradeLabels = { S: '바로 선정', A: '선정 가능', B: '보류', C: '제외 권장', D: '사용 금지' };
 const gradeOrder = { S: 0, A: 1, B: 2, C: 3, D: 4 };
 
