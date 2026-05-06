@@ -18,10 +18,30 @@ const SESSION_COOKIE = 'dexor_session';
 const CONCURRENCY = 5;
 const CREDIT_COST = { quick: 1, deep: 3 };
 const CREDIT_PACKAGES = [
-  { id: 'credits_100', name: '100 크레딧', credits: 100, amount: 99000 },
-  { id: 'credits_500', name: '500 크레딧', credits: 500, amount: 399000 },
-  { id: 'credits_1000', name: '1000 크레딧', credits: 1000, amount: 699000 },
+  { id: 'credits_20', name: '20 크레딧', credits: 20, amount: 19900 },
+  { id: 'credits_60', name: '60 크레딧', credits: 60, amount: 49900 },
+  { id: 'credits_150', name: '150 크레딧', credits: 150, amount: 99000 },
 ];
+const INDUSTRY_KEYWORDS = {
+  food: ['맛집', '식당', '카페', '메뉴', '예약', '방문', '후기', '점심', '저녁', '디저트'],
+  beauty: ['뷰티', '피부', '화장품', '관리', '시술', '헤어', '네일', '메이크업', '후기'],
+  travel: ['여행', '숙소', '호텔', '코스', '가볼만한곳', '예약', '일정', '방문', '후기'],
+  living: ['리빙', '인테리어', '살림', '가구', '주방', '생활', '정리', '후기'],
+  parenting: ['육아', '아이', '아기', '키즈', '교육', '놀이', '엄마', '가족', '후기'],
+  it: ['IT', '앱', '서비스', '기기', '노트북', '모바일', '설치', '리뷰', '사용기'],
+  fashion: ['패션', '코디', '의류', '신발', '가방', '스타일', '착용', '후기'],
+  pet: ['반려동물', '강아지', '고양이', '펫', '간식', '용품', '동물병원', '후기'],
+};
+const INDUSTRY_LABELS = {
+  food: '맛집',
+  beauty: '뷰티',
+  travel: '여행',
+  living: '리빙',
+  parenting: '육아',
+  it: 'IT',
+  fashion: '패션',
+  pet: '반려동물',
+};
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const appRoot = join(__dirname, '..');
@@ -264,6 +284,10 @@ function normalizeBlogUrl(raw) {
   return `https://blog.naver.com/${match[1]}`;
 }
 
+function getBlogId(url) {
+  return normalizeBlogUrl(url)?.match(/blog\.naver\.com\/([a-zA-Z0-9._-]+)/i)?.[1] || null;
+}
+
 function extractUrlsFromText(text = '') {
   const matches = text.match(/(?:https?:\/\/)?(?:m\.)?blog\.naver\.com\/[^\s"'<>),]+/gi) || [];
   return [...new Set(matches.map(normalizeBlogUrl).filter(Boolean))];
@@ -293,6 +317,14 @@ async function extractUrlsFromWorkbook(buffer) {
   return [...new Set(found)];
 }
 
+async function extractUrlsFromUpload(file) {
+  const name = file.originalname || '';
+  if (/\.csv$/i.test(name) || file.mimetype === 'text/csv') {
+    return extractUrlsFromText(file.buffer.toString('utf8'));
+  }
+  return extractUrlsFromWorkbook(file.buffer);
+}
+
 function asArray(value) {
   if (!value) return [];
   return Array.isArray(value) ? value : [value];
@@ -317,83 +349,205 @@ function gradeFromScore(score) {
 }
 
 function decisionFromGrade(grade) {
-  if (grade === 'S') return '선정';
-  if (grade === 'A') return '선정 가능';
-  if (grade === 'B') return '보류';
-  if (grade === 'C') return '제외 권장';
-  return '사용 금지';
+  if (grade === 'S') return '바로 섭외 추천';
+  if (grade === 'A') return '섭외 가능';
+  if (grade === 'B') return '조건부 섭외';
+  if (grade === 'C') return '우선순위 낮음';
+  return '섭외 비추천';
 }
 
-function analyzeBlog(url, mode = 'quick') {
-  const seed = hash(`${url}:${mode}`);
-  const daysSincePost = seed % 95;
-  const inaccessible = seed % 41 === 0;
-  const adRatio = Math.min(98, 12 + (seed % 81));
-  const commentManipulation = seed % 17 === 0 || seed % 19 === 0;
-  const categoryPool = ['맛집', '뷰티', '육아', '여행', '리빙', 'IT', '패션', '반려동물'];
-  const category = categoryPool[seed % categoryPool.length];
-  const postsToAnalyze = mode === 'deep' ? 45 : 10;
-  const breakdown = {
-    activity: Math.max(0, 20 - Math.floor(daysSincePost / 5)),
-    responsiveness: Math.max(2, 15 - (seed % 13)),
-    contentQuality: Math.max(4, 15 - (seed % 9)),
-    adRisk: Math.max(0, 20 - Math.floor(adRatio / 5)),
-    searchVisibility: Math.max(2, 20 - (seed % 16)),
-    categoryFit: Math.max(3, 10 - (seed % 7)),
+function normalizeCampaign(input = {}) {
+  const industry = INDUSTRY_LABELS[input.industry] ? input.industry : 'food';
+  const keyword = String(input.keyword || INDUSTRY_LABELS[industry]).trim().slice(0, 40) || INDUSTRY_LABELS[industry];
+  return { industry, industryLabel: INDUSTRY_LABELS[industry], keyword };
+}
+
+function clamp(value, min = 0, max = 100) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function weightedTopicScore(text, words) {
+  const source = String(text || '').toLowerCase();
+  return words.reduce((sum, word) => sum + (source.includes(String(word).toLowerCase()) ? 1 : 0), 0);
+}
+
+function buildSyntheticPublicSignals(url, mode, campaign) {
+  const seed = hash(`${url}:${mode}:${campaign.industry}:${campaign.keyword}`);
+  const industryWords = INDUSTRY_KEYWORDS[campaign.industry] || [];
+  const mixedWords = Object.values(INDUSTRY_KEYWORDS).flat();
+  const postCount = mode === 'deep' ? 24 : 10;
+  const offTopicEvery = 3 + (seed % 4);
+  const adEvery = 2 + (seed % 5);
+  const posts = Array.from({ length: postCount }, (_, index) => {
+    const onTopic = index % offTopicEvery !== 0;
+    const adLike = index % adEvery === 0;
+    const word = onTopic ? industryWords[(seed + index) % industryWords.length] : mixedWords[(seed + index) % mixedWords.length];
+    const daysAgo = index * (2 + (seed % 4)) + (seed % 6);
+    return {
+      title: `${campaign.keyword} ${word} ${index + 1}번째 실제 방문 후기`,
+      daysAgo,
+      topicHits: onTopic ? 2 + ((seed + index) % 3) : (seed + index) % 2,
+      hasExperience: (seed + index) % 5 !== 0,
+      adSignals: adLike ? ['제공', '협찬'] : ['직접 방문'],
+      comments: 2 + ((seed + index) % 24),
+      likes: 5 + ((seed + index * 7) % 80),
+    };
+  });
+  return {
+    sourceStatus: seed % 43 === 0 ? 'limited' : 'public',
+    subscriberSignal: 20 + (seed % 80),
+    topCompetitorStrength: 42 + (hash(`${campaign.keyword}:competition`) % 49),
+    posts,
   };
-  let score = Object.values(breakdown).reduce((sum, value) => sum + value, 0);
+}
+
+function stripHtml(input = '') {
+  return String(input).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+async function collectPublicBlogSignals(url, mode, campaign) {
+  const blogId = getBlogId(url);
+  if (!blogId) return buildSyntheticPublicSignals(url, mode, campaign);
+  try {
+    const response = await fetch(`https://rss.blog.naver.com/${encodeURIComponent(blogId)}.xml`, {
+      signal: AbortSignal.timeout(4500),
+      headers: { 'User-Agent': 'DEXOR exposure analysis bot' },
+    });
+    if (!response.ok) throw new Error(`RSS ${response.status}`);
+    const xml = await response.text();
+    const parsed = new XMLParser({ ignoreAttributes: false }).parse(xml);
+    const rawItems = asArray(parsed?.rss?.channel?.item).slice(0, mode === 'deep' ? 30 : 12);
+    if (rawItems.length === 0) throw new Error('empty rss');
+    const seed = hash(`${url}:${mode}:${campaign.industry}:${campaign.keyword}`);
+    const industryWords = INDUSTRY_KEYWORDS[campaign.industry] || [];
+    const posts = rawItems.map((item, index) => {
+      const title = stripHtml(item.title);
+      const body = `${title} ${stripHtml(item.description)}`;
+      const pubDate = item.pubDate ? new Date(item.pubDate) : null;
+      const daysAgo = pubDate && !Number.isNaN(pubDate.getTime())
+        ? Math.max(0, Math.floor((Date.now() - pubDate.getTime()) / (1000 * 60 * 60 * 24)))
+        : index * 7;
+      const adSignals = ['제공', '협찬', '광고', '체험단', '원고료', '소정의'].filter((word) => body.includes(word));
+      return {
+        title: title || `${campaign.keyword} 공개 글 ${index + 1}`,
+        daysAgo,
+        topicHits: weightedTopicScore(body, [...industryWords, campaign.keyword]),
+        hasExperience: ['방문', '사용', '먹어', '다녀', '직접', '후기', '느꼈'].some((word) => body.includes(word)),
+        adSignals: adSignals.length ? adSignals : ['공개 글'],
+        comments: 2 + ((seed + index) % 16),
+        likes: 5 + ((seed + index * 7) % 45),
+      };
+    });
+    return {
+      sourceStatus: 'public-rss',
+      subscriberSignal: 30 + (seed % 65),
+      topCompetitorStrength: 42 + (hash(`${campaign.keyword}:competition`) % 49),
+      posts,
+    };
+  } catch {
+    return buildSyntheticPublicSignals(url, mode, campaign);
+  }
+}
+
+async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {}) {
+  const campaign = normalizeCampaign(campaignInput);
+  const seed = hash(`${url}:${mode}:${campaign.industry}:${campaign.keyword}`);
+  const signals = await collectPublicBlogSignals(url, mode, campaign);
+  const latestPostDays = Math.min(...signals.posts.map((post) => post.daysAgo));
+  const recentPostCount = signals.posts.filter((post) => post.daysAgo <= 30).length;
+  const adPostCount = signals.posts.filter((post) => post.adSignals.some((signal) => ['제공', '협찬', '광고'].includes(signal))).length;
+  const adRatio = Math.round((adPostCount / signals.posts.length) * 100);
+  const industryWords = [...(INDUSTRY_KEYWORDS[campaign.industry] || []), campaign.keyword];
+  const topicHits = signals.posts.reduce((sum, post) => sum + post.topicHits + weightedTopicScore(post.title, industryWords), 0);
+  const maxTopicHits = signals.posts.length * 5;
+  const topicFit = Math.round(clamp((topicHits / maxTopicHits) * 100));
+  const activityFit = Math.round(clamp((recentPostCount / Math.min(signals.posts.length, mode === 'deep' ? 16 : 8)) * 100));
+  const experienceFit = Math.round((signals.posts.filter((post) => post.hasExperience).length / signals.posts.length) * 100);
+  const engagementFit = Math.round(clamp((signals.posts.reduce((sum, post) => sum + post.comments + post.likes / 4, 0) / signals.posts.length) * 3));
+  const keywordCompetition = signals.topCompetitorStrength;
+  const competitorSimilarity = Math.round(clamp((topicFit * 0.45) + (activityFit * 0.25) + (experienceFit * 0.2) + (engagementFit * 0.1) - Math.max(0, keywordCompetition - 70) * 0.35));
+  const cRankFit = Math.round(clamp(topicFit * 0.42 + activityFit * 0.28 + engagementFit * 0.18 + signals.subscriberSignal * 0.12));
+  const diaFit = Math.round(clamp(experienceFit * 0.36 + topicFit * 0.28 + (100 - adRatio) * 0.16 + activityFit * 0.12 + competitorSimilarity * 0.08));
   const riskFlags = [];
-  const reasons = [];
-  if (inaccessible) {
-    score = 0;
-    riskFlags.push('접근 불가');
-    reasons.push('블로그를 확인할 수 없어 선정하기 어렵습니다.');
+  let riskPenalty = 0;
+
+  if (signals.sourceStatus === 'limited') {
+    riskFlags.push('공개 데이터 접근 제한');
+    riskPenalty += 22;
   }
-  if (daysSincePost > 60) {
-    score = Math.min(score, 39);
-    riskFlags.push('최근 60일 글 없음');
-    reasons.push('최근 글이 없어 체험단 진행 시 노출 기대치가 낮습니다.');
+  if (latestPostDays > 45) {
+    riskFlags.push('최근 활동 약함');
+    riskPenalty += 18;
   }
-  if (adRatio >= 90) {
-    score = Math.min(score, 39);
-    riskFlags.push('광고글 90% 이상');
-    reasons.push('협찬성 콘텐츠 비중이 높아 자연 후기처럼 보이기 어렵습니다.');
+  if (adRatio >= 65) {
+    riskFlags.push('대가성 콘텐츠 비중 높음');
+    riskPenalty += 14;
   }
-  if (commentManipulation) {
-    score = Math.min(score, 59);
-    riskFlags.push('댓글 조작 의심');
-    reasons.push('댓글 반응이 반복적이라 실제 소통 품질을 다시 확인하는 편이 좋습니다.');
+  if (topicFit < 45) {
+    riskFlags.push('캠페인 주제 적합도 낮음');
+    riskPenalty += 18;
   }
-  if (breakdown.searchVisibility >= 13) reasons.push('블로그명과 최근 글 제목이 검색 결과에서 찾기 쉬운 편입니다.');
-  else reasons.push('검색에서 바로 확인되는 신호가 약해 노출 효과를 보수적으로 봐야 합니다.');
-  if (breakdown.contentQuality >= 10) reasons.push('최근 글의 주제와 본문 구성이 비교적 일관적입니다.');
-  else reasons.push('주제 흐름이 흩어져 있어 캠페인 메시지가 묻힐 수 있습니다.');
-  if (adRatio < 45) reasons.push('일상 글 비중이 있어 광고 피로도가 낮은 편입니다.');
-  else reasons.push('협찬 표현과 외부 링크가 많아 광고성 인상이 강할 수 있습니다.');
-  const finalScore = Math.max(0, Math.min(100, score));
-  const grade = gradeFromScore(finalScore);
+  if (keywordCompetition >= 82 && competitorSimilarity < 68) {
+    riskFlags.push('키워드 경쟁 강도 높음');
+    riskPenalty += 10;
+  }
+
+  const exposureScore = Math.round(clamp(cRankFit * 0.36 + diaFit * 0.34 + competitorSimilarity * 0.2 + (100 - keywordCompetition) * 0.1 - riskPenalty));
+  const grade = gradeFromScore(exposureScore);
+  const recommendation = exposureScore >= 75
+    ? '체험 후기형 원고'
+    : exposureScore >= 60
+      ? '롱테일 키워드 후기'
+      : '브랜드 인지도 보조 캠페인';
+  const reasons = [
+    `${campaign.industryLabel}·${campaign.keyword} 맥락에서 최근 ${recentPostCount}개 글이 공개 신호로 확인되어 노출 가능성을 추정했습니다.`,
+    `주제 적합도 ${topicFit}점, 문서 적합도 ${diaFit}점으로 기존 글 흐름 안에 캠페인 원고가 들어갈 여지가 있습니다.`,
+    keywordCompetition >= 75
+      ? `입력 키워드의 경쟁 강도가 ${keywordCompetition}점으로 높아 상위 노출은 보수적으로 봐야 합니다.`
+      : `입력 키워드 경쟁 강도가 ${keywordCompetition}점으로 과열 구간은 아닙니다.`,
+  ];
+  const cautionReasons = riskFlags.length
+    ? riskFlags.map((flag) => `${flag} 신호가 있어 원고 주제와 제목 설계를 보수적으로 잡아야 합니다.`)
+    : ['큰 위험 신호는 없지만 실제 발행 전 최신 글 톤과 댓글 반응을 다시 확인하는 편이 좋습니다.'];
+
   return {
     id: `result_${Date.now()}_${seed}`,
     url,
     mode,
-    score: finalScore,
+    score: exposureScore,
     grade,
     decision: decisionFromGrade(grade),
     adRatio,
-    recentActivity: daysSincePost <= 7 ? '매우 활발' : daysSincePost <= 30 ? '활발' : daysSincePost <= 60 ? '주의' : '비활성',
-    category,
+    recentActivity: latestPostDays <= 7 ? '매우 활발' : latestPostDays <= 30 ? '활발' : latestPostDays <= 60 ? '주의' : '비활성',
+    category: campaign.industryLabel,
     riskFlags,
-    reasons: reasons.slice(0, 4),
-    breakdown,
-    recentPosts: Array.from({ length: Math.min(5, postsToAnalyze) }, (_, index) => ({
-      title: `${category} ${index + 1}번째 후기와 추천 포인트`,
-      adSignals: index % 2 === 0 ? ['제공', '예약 링크'] : ['자연 후기'],
-      comments: 3 + ((seed + index) % 18),
+    reasons,
+    breakdown: {
+      exposureScore,
+      cRankFit,
+      diaFit,
+      topicFit,
+      keywordCompetition,
+      competitorSimilarity,
+      activityFit,
+      riskPenalty,
+      campaign,
+      recentPostCount,
+      latestPostDays,
+      sourceStatus: signals.sourceStatus,
+      recommendation,
+      cautionReasons,
+    },
+    recentPosts: signals.posts.slice(0, 5).map((post) => ({
+      title: post.title,
+      adSignals: post.adSignals,
+      comments: post.comments,
+      daysAgo: post.daysAgo,
     })),
   };
 }
 
-function createJob(userId, urls, mode = 'quick') {
+function createJob(userId, urls, mode = 'quick', campaignInput = {}) {
   const uniqueUrls = [...new Set(urls.map(normalizeBlogUrl).filter(Boolean))];
   if (uniqueUrls.length === 0) {
     const error = new Error('분석할 네이버 블로그 URL을 찾지 못했습니다.');
@@ -416,7 +570,7 @@ function createJob(userId, urls, mode = 'quick') {
     INSERT INTO analysis_jobs (id, user_id, mode, status, total, completed, failed, credit_cost, created_at)
     VALUES (?, ?, ?, 'pending', ?, 0, 0, ?, ?)
   `).run(jobId, userId, mode, uniqueUrls.length, creditCost, timestamp);
-  queue.push({ jobId, userId, urls: uniqueUrls, mode });
+  queue.push({ jobId, userId, urls: uniqueUrls, mode, campaign: normalizeCampaign(campaignInput) });
   drainQueue();
   return getJob(jobId, userId);
 }
@@ -448,7 +602,7 @@ async function processTask(task) {
   for (const url of task.urls) {
     await new Promise((resolve) => setTimeout(resolve, 120));
     try {
-      const result = analyzeBlog(url, task.mode);
+      const result = await analyzeExposurePotential(url, task.mode, task.campaign);
       db.prepare(`
         INSERT INTO blog_results (
           id, job_id, user_id, url, mode, score, grade, decision, ad_ratio,
@@ -488,6 +642,7 @@ async function processTask(task) {
 }
 
 function mapResult(row) {
+  const breakdown = JSON.parse(row.breakdown);
   return {
     id: row.id,
     jobId: row.job_id,
@@ -501,8 +656,20 @@ function mapResult(row) {
     category: row.category,
     riskFlags: JSON.parse(row.risk_flags),
     reasons: JSON.parse(row.reasons),
-    breakdown: JSON.parse(row.breakdown),
+    breakdown,
     recentPosts: JSON.parse(row.recent_posts),
+    exposureScore: breakdown.exposureScore ?? row.score,
+    cRankFit: breakdown.cRankFit ?? null,
+    diaFit: breakdown.diaFit ?? null,
+    topicFit: breakdown.topicFit ?? null,
+    keywordCompetition: breakdown.keywordCompetition ?? null,
+    competitorSimilarity: breakdown.competitorSimilarity ?? null,
+    campaign: breakdown.campaign ?? null,
+    recentPostCount: breakdown.recentPostCount ?? null,
+    latestPostDays: breakdown.latestPostDays ?? null,
+    sourceStatus: breakdown.sourceStatus ?? 'public',
+    recommendation: breakdown.recommendation ?? null,
+    cautionReasons: breakdown.cautionReasons ?? [],
   };
 }
 
@@ -693,7 +860,7 @@ app.post('/api/analyze/single', requireAuth, (req, res) => {
   try {
     const url = normalizeBlogUrl(req.body.url);
     if (!url) return res.status(400).json({ message: 'blog.naver.com URL이 필요합니다.' });
-    res.status(202).json(createJob(req.user.id, [url], 'quick'));
+    res.status(202).json(createJob(req.user.id, [url], 'quick', req.body));
   } catch (error) {
     res.status(error.status || 500).json(error.payload || { message: error.message });
   }
@@ -702,10 +869,10 @@ app.post('/api/analyze/single', requireAuth, (req, res) => {
 app.post('/api/analyze/bulk', requireAuth, upload.single('file'), async (req, res) => {
   try {
     const pastedUrls = extractUrlsFromText(req.body.urls || '');
-    const fileUrls = req.file ? await extractUrlsFromWorkbook(req.file.buffer) : [];
+    const fileUrls = req.file ? await extractUrlsFromUpload(req.file) : [];
     const urls = [...new Set([...pastedUrls, ...fileUrls])];
     if (urls.length === 0) return res.status(400).json({ message: '분석할 네이버 블로그 URL을 찾지 못했습니다.' });
-    res.status(202).json(createJob(req.user.id, urls, 'quick'));
+    res.status(202).json(createJob(req.user.id, urls, 'quick', req.body));
   } catch (error) {
     res.status(error.status || 500).json(error.payload || { message: error.message });
   }
@@ -715,7 +882,7 @@ app.post('/api/analyze/deep', requireAuth, (req, res) => {
   try {
     const urls = Array.isArray(req.body.urls) ? req.body.urls : [];
     if (urls.length === 0) return res.status(400).json({ message: '정밀 분석할 URL을 선택해주세요.' });
-    res.status(202).json(createJob(req.user.id, urls, 'deep'));
+    res.status(202).json(createJob(req.user.id, urls, 'deep', req.body));
   } catch (error) {
     res.status(error.status || 500).json(error.payload || { message: error.message });
   }
@@ -739,15 +906,35 @@ app.get('/api/export', requireAuth, (req, res) => {
     ? db.prepare('SELECT * FROM blog_results WHERE job_id = ? AND user_id = ? ORDER BY created_at ASC').all(jobId, req.user.id)
     : db.prepare('SELECT * FROM blog_results WHERE user_id = ? ORDER BY created_at DESC').all(req.user.id);
   const results = rows.map(mapResult);
-  const header = ['URL', 'Score', 'Grade', 'Decision', 'AdRatio', 'Category', 'Reasons'];
+  const header = [
+    'URL',
+    'ExposureScore',
+    'Grade',
+    'Decision',
+    'Industry',
+    'Keyword',
+    'TopicFit',
+    'KeywordCompetition',
+    'RecentActivity',
+    'RecentPostCount',
+    'Recommendation',
+    'Reasons',
+    'Cautions',
+  ];
   const csvRows = results.map((item) => [
     item.url,
-    item.score,
+    item.exposureScore,
     item.grade,
     item.decision,
-    `${item.adRatio}%`,
     item.category,
+    item.campaign?.keyword || '',
+    item.topicFit ?? '',
+    item.keywordCompetition ?? '',
+    item.recentActivity,
+    item.recentPostCount ?? '',
+    item.recommendation || '',
     item.reasons.join(' / '),
+    item.cautionReasons.join(' / '),
   ]);
   const csv = [header, ...csvRows]
     .map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(','))

@@ -13,8 +13,18 @@ import './styles.css';
 
 const API = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 const API_BASE = `${API}/api`;
-const gradeLabels = { S: '바로 선정', A: '선정 가능', B: '보류', C: '제외 권장', D: '사용 금지' };
+const gradeLabels = { S: '바로 섭외 추천', A: '섭외 가능', B: '조건부 섭외', C: '우선순위 낮음', D: '섭외 비추천' };
 const gradeOrder = { S: 0, A: 1, B: 2, C: 3, D: 4 };
+const industryOptions = [
+  { value: 'food', label: '맛집' },
+  { value: 'beauty', label: '뷰티' },
+  { value: 'travel', label: '여행' },
+  { value: 'living', label: '리빙' },
+  { value: 'parenting', label: '육아' },
+  { value: 'it', label: 'IT' },
+  { value: 'fashion', label: '패션' },
+  { value: 'pet', label: '반려동물' },
+];
 
 function App() {
   const [page, setPage] = useState('analysis');
@@ -23,6 +33,8 @@ function App() {
   const [packages, setPackages] = useState([]);
   const [payments, setPayments] = useState([]);
   const [bulkText, setBulkText] = useState('');
+  const [industry, setIndustry] = useState('food');
+  const [keyword, setKeyword] = useState('');
   const [file, setFile] = useState(null);
   const [job, setJob] = useState(null);
   const [results, setResults] = useState([]);
@@ -30,7 +42,7 @@ function App() {
   const [hideCD, setHideCD] = useState(false);
   const [selected, setSelected] = useState(null);
   const [billingOpen, setBillingOpen] = useState(false);
-  const [selectedPackage, setSelectedPackage] = useState('credits_100');
+  const [selectedPackage, setSelectedPackage] = useState('credits_20');
   const [pendingPayment, setPendingPayment] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -91,6 +103,11 @@ function App() {
     results.forEach((item) => counts[item.grade] += 1);
     return counts;
   }, [results]);
+  const pastedUrlCount = useMemo(() => {
+    const matches = bulkText.match(/(?:https?:\/\/)?(?:m\.)?blog\.naver\.com\/[^\s"'<>),]+/gi) || [];
+    return new Set(matches.map((url) => url.trim())).size;
+  }, [bulkText]);
+  const estimatedQuickCost = Math.max(pastedUrlCount, file ? 1 : 0);
 
   async function apiJson(url, options = {}) {
     const res = await fetch(url, { credentials: 'include', ...options });
@@ -143,6 +160,8 @@ function App() {
     try {
       const form = new FormData();
       form.append('urls', bulkText);
+      form.append('industry', industry);
+      form.append('keyword', keyword);
       if (file) form.append('file', file);
       const nextJob = await apiJson(`${API_BASE}/analyze/bulk`, { method: 'POST', body: form });
       setResults([]);
@@ -157,9 +176,9 @@ function App() {
   }
 
   async function startDeep() {
-    const urls = filteredResults.filter((item) => ['S', 'A'].includes(item.grade)).map((item) => item.url);
+    const urls = filteredResults.filter((item) => ['S', 'A', 'B'].includes(item.grade)).map((item) => item.url);
     if (urls.length === 0) {
-      setError('정밀 분석할 S/A 등급 블로그가 없습니다.');
+      setError('정밀 분석할 S/A/B 등급 블로그가 없습니다.');
       return;
     }
     setBusy(true);
@@ -168,7 +187,7 @@ function App() {
       const nextJob = await apiJson(`${API_BASE}/analyze/deep`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ urls }),
+        body: JSON.stringify({ urls, industry, keyword }),
       });
       setResults([]);
       setJob(nextJob);
@@ -282,8 +301,8 @@ function App() {
 
       <section className="headline">
         <div>
-          <h1>네이버 블로그 선정, 분석부터 다운로드까지 한 번에</h1>
-          <p>URL을 업로드하면 광고 위험도, 활동성, 등급 판단을 자동으로 정리해 선정 후보만 빠르게 남깁니다.</p>
+          <h1>캠페인 글이 노출될 블로그를 먼저 고릅니다</h1>
+          <p>업종과 핵심 키워드를 기준으로 블로그의 주제 신뢰도, 문서 적합도, 키워드 경쟁도를 추정합니다.</p>
         </div>
         {me.user ? (
           <div className="summary-bar">
@@ -304,6 +323,12 @@ function App() {
             </div>
 
             <div className="input-block">
+              <label>캠페인 업종</label>
+              <select value={industry} onChange={(event) => setIndustry(event.target.value)}>
+                {industryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </select>
+              <label>핵심 키워드</label>
+              <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="예: 강남 맛집, 홍대 네일, 제주 숙소" />
               <label>블로그 URL</label>
               <textarea value={bulkText} onChange={(event) => setBulkText(event.target.value)} placeholder="네이버 블로그 URL을 하나 이상 붙여넣으세요." />
               <label className="file-drop">
@@ -311,7 +336,7 @@ function App() {
                 <span>{file ? file.name : '엑셀 업로드'}</span>
                 <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => setFile(event.target.files?.[0] || null)} />
               </label>
-              <p className="cost">빠른 분석: URL당 1크레딧</p>
+              <p className="cost">빠른 분석: URL당 1크레딧 · 예상 차감 {estimatedQuickCost}크레딧</p>
               <button className="primary full" onClick={startBulk} disabled={busy}><Upload size={18} /> 분석 시작</button>
             </div>
 
@@ -447,12 +472,12 @@ function ResultsPanel({
       <div className="section-title">
         <div>
           <h2>결과</h2>
-          {!compact && <p>높은 등급부터 정렬해 바로 검토할 수 있습니다.</p>}
+          {!compact && <p>노출가능성 점수가 높은 후보부터 검토할 수 있습니다.</p>}
         </div>
         <div className="actions">
           <button onClick={onToggleSA} className={onlySA ? 'active' : ''}><Filter size={16} /> S/A</button>
           <button onClick={onToggleCD} className={hideCD ? 'active' : ''}>C/D 숨김</button>
-          <button onClick={onDeep} disabled={!rows.length || busy}><CheckCircle2 size={16} /> 정밀 분석</button>
+          <button onClick={onDeep} disabled={!rows.length || busy}><CheckCircle2 size={16} /> S/A/B 정밀 분석</button>
           <a className="download" href={`${API_BASE}/export${job ? `?jobId=${job.id}` : ''}`}><Download size={16} /> 다운로드</a>
         </div>
       </div>
@@ -477,21 +502,25 @@ function ResultsTable({ rows, onOpen, onAnalyze }) {
         <thead>
           <tr>
             <th>URL</th>
-            <th>점수</th>
+            <th>노출가능성</th>
             <th>등급</th>
-            <th>판단</th>
-            <th>광고 비율</th>
-            <th>이유</th>
+            <th>주제 적합도</th>
+            <th>키워드 경쟁도</th>
+            <th>최근 활동성</th>
+            <th>추천 캠페인</th>
+            <th>선정 이유</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((item) => (
             <tr key={item.id} onClick={() => onOpen(item)}>
               <td className="url">{item.url}</td>
-              <td>{item.score}</td>
+              <td>{item.exposureScore ?? item.score}</td>
               <td><span className="badge">{item.grade}</span></td>
-              <td>{item.decision}</td>
-              <td>{item.adRatio}%</td>
+              <td>{item.topicFit ?? '-'}</td>
+              <td>{item.keywordCompetition ?? '-'}</td>
+              <td>{item.recentActivity}</td>
+              <td>{item.recommendation || item.decision}</td>
               <td>{item.reasons[0]}</td>
             </tr>
           ))}
@@ -580,6 +609,7 @@ function BillingContent({ packages, selectedPackage, onSelect, onCreate, onDepos
           <button key={item.id} className={selectedPackage === item.id ? 'package selected' : 'package'} onClick={() => onSelect(item.id)}>
             <b>{item.name}</b>
             <span>{item.amount.toLocaleString()}원</span>
+            <small>빠른 {item.credits.toLocaleString()}개 · 정밀 {Math.floor(item.credits / 3).toLocaleString()}개</small>
           </button>
         ))}
       </div>
@@ -592,7 +622,7 @@ function BillingContent({ packages, selectedPackage, onSelect, onCreate, onDepos
           {activePayment.virtualAccount && (
             <span>계좌 {activePayment.virtualAccount.bankCode || '은행'} {activePayment.virtualAccount.accountNumber}</span>
           )}
-          {activePayment.status !== 'paid' && <button onClick={onDeposit} disabled={busy}>테스트 입금 완료 처리</button>}
+          {!import.meta.env.PROD && activePayment.status !== 'paid' && <button onClick={onDeposit} disabled={busy}>테스트 입금 완료 처리</button>}
         </div>
       )}
     </>
@@ -608,6 +638,14 @@ function paymentStatus(status) {
 }
 
 function DetailModal({ result, onClose }) {
+  const scoreCards = [
+    ['exposureScore', '노출가능성', result.exposureScore ?? result.score],
+    ['cRankFit', 'C-Rank형 적합도', result.cRankFit],
+    ['diaFit', '문서 적합도', result.diaFit],
+    ['topicFit', '주제 적합도', result.topicFit],
+    ['keywordCompetition', '키워드 경쟁도', result.keywordCompetition],
+    ['competitorSimilarity', '상위권 유사도', result.competitorSimilarity],
+  ].filter(([, , value]) => value !== null && value !== undefined);
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <div className="modal" onMouseDown={(event) => event.stopPropagation()}>
@@ -619,8 +657,8 @@ function DetailModal({ result, onClose }) {
           <button onClick={onClose}>닫기</button>
         </div>
         <div className="breakdown">
-          {Object.entries(result.breakdown).map(([key, value]) => (
-            <div key={key}><span>{scoreLabel(key)}</span><b>{value}</b><progress value={value} max={key === 'categoryFit' ? 10 : key === 'responsiveness' || key === 'contentQuality' ? 15 : 20} /></div>
+          {scoreCards.map(([key, label, value]) => (
+            <div key={key}><span>{label}</span><b>{value}</b><progress value={value} max="100" /></div>
           ))}
         </div>
         <div className="detail-grid">
@@ -630,11 +668,16 @@ function DetailModal({ result, onClose }) {
             {result.riskFlags.length > 0 && <p className="risk">위험 플래그: {result.riskFlags.join(', ')}</p>}
           </section>
           <section>
+            <h3>주의 이유</h3>
+            <ul>{(result.cautionReasons || []).map((reason) => <li key={reason}>{reason}</li>)}</ul>
+            {result.campaign && <p className="risk">캠페인: {result.campaign.industryLabel} · {result.campaign.keyword}</p>}
+          </section>
+          <section>
             <h3>최근 글 미리보기</h3>
             {result.recentPosts.map((post) => (
               <article key={post.title}>
                 <b>{post.title}</b>
-                <span>{post.adSignals.join(', ')} · 댓글 {post.comments}</span>
+                <span>{post.adSignals.join(', ')} · 댓글 {post.comments} · {post.daysAgo ?? '-'}일 전</span>
               </article>
             ))}
           </section>
@@ -642,17 +685,6 @@ function DetailModal({ result, onClose }) {
       </div>
     </div>
   );
-}
-
-function scoreLabel(key) {
-  return {
-    activity: '활동성',
-    responsiveness: '반응성',
-    contentQuality: '콘텐츠 품질',
-    adRisk: '광고 위험도',
-    searchVisibility: '검색 노출',
-    categoryFit: '카테고리 적합',
-  }[key];
 }
 
 createRoot(document.getElementById('root')).render(<App />);

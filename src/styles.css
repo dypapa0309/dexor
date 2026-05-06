@@ -13,7 +13,7 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--page); }
-button, input, textarea { font: inherit; }
+button, input, textarea, select { font: inherit; }
 button, a.download, .login-actions a {
   border: 1px solid var(--line);
   background: var(--surface);
@@ -201,7 +201,7 @@ button:disabled { opacity: .52; cursor: not-allowed; }
 }
 .input-block { display: grid; gap: 12px; }
 label { color: var(--ink); font-size: 14px; font-weight: 600; }
-input, textarea {
+input, textarea, select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -209,7 +209,7 @@ input, textarea {
   background: var(--surface);
   color: var(--ink);
 }
-input:focus, textarea:focus, button:focus, a:focus {
+input:focus, textarea:focus, select:focus, button:focus, a:focus {
   outline: 2px solid color-mix(in srgb, var(--brand) 40%, transparent);
   outline-offset: 2px;
 }
@@ -278,7 +278,7 @@ progress { width: 100%; height: 8px; accent-color: var(--brand); }
 }
 
 .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 6px; }
-table { width: 100%; border-collapse: collapse; min-width: 820px; }
+table { width: 100%; border-collapse: collapse; min-width: 1040px; }
 th, td {
   padding: 12px;
   text-align: left;
@@ -356,6 +356,7 @@ tbody tr:hover { background: var(--panel); }
   gap: 6px;
 }
 .package span { color: var(--muted); }
+.package small { color: var(--muted); font-size: 12px; }
 .package.selected {
   border-color: var(--brand);
   color: var(--brand);
