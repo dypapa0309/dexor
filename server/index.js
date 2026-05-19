@@ -288,16 +288,36 @@ function spendCredits(userId, amount, reason, refId) {
   return true;
 }
 
-function normalizeBlogUrl(raw) {
+function parseBlogUrl(raw) {
   if (!raw || typeof raw !== 'string') return null;
   const trimmed = raw.trim();
-  const match = trimmed.match(/(?:https?:\/\/)?(?:m\.)?blog\.naver\.com\/([a-zA-Z0-9._-]+)/i);
+  let match = trimmed.match(/(?:https?:\/\/)?(?:m\.)?blog\.naver\.com\/([a-zA-Z0-9._-]+)(?:\/([0-9]+))?/i);
+  if (match) return { blogId: match[1], logNo: match[2] || null };
+  match = trimmed.match(/[?&]blogId=([a-zA-Z0-9._-]+).*?[?&]logNo=([0-9]+)/i)
+    || trimmed.match(/[?&]logNo=([0-9]+).*?[?&]blogId=([a-zA-Z0-9._-]+)/i);
   if (!match) return null;
-  return `https://blog.naver.com/${match[1]}`;
+  if (/blogId=/i.test(match[0]) && /logNo=/i.test(match[0])) {
+    return /[?&]blogId=/i.test(match[0])
+      ? { blogId: match[1], logNo: match[2] }
+      : { blogId: match[2], logNo: match[1] };
+  }
+  return null;
+}
+
+function normalizeBlogUrl(raw) {
+  const parsed = parseBlogUrl(raw);
+  if (!parsed) return null;
+  return parsed.logNo
+    ? `https://blog.naver.com/${parsed.blogId}/${parsed.logNo}`
+    : `https://blog.naver.com/${parsed.blogId}`;
 }
 
 function getBlogId(url) {
-  return normalizeBlogUrl(url)?.match(/blog\.naver\.com\/([a-zA-Z0-9._-]+)/i)?.[1] || null;
+  return parseBlogUrl(normalizeBlogUrl(url) || url)?.blogId || null;
+}
+
+function getLogNo(url) {
+  return parseBlogUrl(normalizeBlogUrl(url) || url)?.logNo || null;
 }
 
 function extractUrlsFromText(text = '') {
@@ -392,6 +412,91 @@ function weightedTopicScore(text, words) {
   return words.reduce((sum, word) => sum + (source.includes(String(word).toLowerCase()) ? 1 : 0), 0);
 }
 
+function htmlDecode(input = '') {
+  return String(input)
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCharCode(Number.parseInt(hex, 16)))
+    .replace(/&#([0-9]+);/g, (_, code) => String.fromCharCode(Number.parseInt(code, 10)));
+}
+
+function extractMetaContent(html, key) {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = String(html).match(new RegExp(`<meta[^>]+(?:property|name)=["']${escaped}["'][^>]+content=["']([^"']*)["']`, 'i'))
+    || String(html).match(new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]+(?:property|name)=["']${escaped}["']`, 'i'));
+  return htmlDecode(match?.[1] || '');
+}
+
+function extractReadablePostText(html) {
+  const source = String(html || '');
+  const start = source.indexOf('se-main-container');
+  const end = source.indexOf('post_footer_contents', start);
+  const contentHtml = start >= 0 ? source.slice(start, end > start ? end : start + 120000) : source;
+  return stripHtml(htmlDecode(contentHtml));
+}
+
+function keywordTerms(campaign) {
+  const industryWords = INDUSTRY_KEYWORDS[campaign.industry] || [];
+  const keywordParts = String(campaign.keyword || '').split(/[\s,/·|]+/).filter((word) => word.length >= 2);
+  return [...new Set([...industryWords, campaign.keyword, ...keywordParts].filter(Boolean))];
+}
+
+async function collectPostSignals(url, campaign) {
+  const blogId = getBlogId(url);
+  const logNo = getLogNo(url);
+  if (!blogId || !logNo) return null;
+
+  const postUrl = `https://blog.naver.com/PostView.naver?blogId=${encodeURIComponent(blogId)}&logNo=${encodeURIComponent(logNo)}`;
+  const response = await fetch(postUrl, {
+    signal: AbortSignal.timeout(5500),
+    headers: { 'User-Agent': 'Mozilla/5.0 DEXOR exposure analysis bot' },
+  });
+  if (!response.ok) throw new Error(`네이버 포스트 접근 실패 (${response.status})`);
+  const html = await response.text();
+  const title = extractMetaContent(html, 'og:title') || stripHtml(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '');
+  const description = extractMetaContent(html, 'og:description');
+  const body = extractReadablePostText(html);
+  const combined = `${title} ${description} ${body}`;
+  if (stripHtml(combined).length < 80) throw new Error('개별 포스트 본문을 충분히 읽지 못했습니다.');
+
+  const dateMatch = html.match(/\d{4}\.\s*\d{1,2}\.\s*\d{1,2}\.\s*\d{1,2}:\d{2}/);
+  const terms = keywordTerms(campaign);
+  const exactKeyword = String(campaign.keyword || '').trim();
+  const titleHits = weightedTopicScore(title, terms);
+  const bodyHits = weightedTopicScore(`${description} ${body}`, terms);
+  const exactBonus = exactKeyword && combined.toLowerCase().includes(exactKeyword.toLowerCase()) ? 18 : 0;
+  const titleBonus = exactKeyword && title.toLowerCase().includes(exactKeyword.toLowerCase()) ? 18 : 0;
+  const topicFit = Math.round(clamp(titleHits * 11 + bodyHits * 8 + exactBonus + titleBonus));
+  const experienceFit = ['방문', '사용', '먹어', '다녀', '직접', '후기', '느꼈', '추천', '메뉴', '가격', '위치']
+    .filter((word) => combined.includes(word)).length;
+  const experienceScore = Math.round(clamp(experienceFit * 12));
+  const imageCount = (html.match(/se-image-resource|blogthumb|postfiles\.pstatic/g) || []).length;
+  const bodyLength = stripHtml(body).length;
+  const qualityFit = Math.round(clamp((bodyLength / 18) + Math.min(imageCount, 12) * 4));
+  const adSignals = ['제공', '협찬', '광고', '체험단', '원고료', '소정의'].filter((word) => combined.includes(word));
+  const adPenalty = adSignals.length >= 3 ? 12 : adSignals.length >= 1 ? 5 : 0;
+  const postFit = Math.round(clamp(topicFit * 0.48 + experienceScore * 0.24 + qualityFit * 0.28 - adPenalty));
+
+  return {
+    sourceStatus: 'post-view',
+    blogId,
+    logNo,
+    title: title.replace(/\s*:\s*네이버\s*블로그\s*$/i, '').trim(),
+    description,
+    publishedAtLabel: dateMatch?.[0] || null,
+    bodyLength,
+    imageCount,
+    topicFit,
+    experienceFit: experienceScore,
+    qualityFit,
+    adSignals,
+    postFit,
+  };
+}
+
 function normalizeLegacyIndex(value = '') {
   const text = String(value).trim();
   if (!text) return null;
@@ -403,12 +508,22 @@ function normalizeLegacyIndex(value = '') {
 
 function dataConfidenceFromResult(result) {
   const sourceStatus = result.breakdown?.sourceStatus;
-  if (sourceStatus === 'public-rss') {
+  if (sourceStatus === 'public-rss' || sourceStatus === 'post-view+public-rss') {
     return {
       level: '높음',
       score: 88,
-      sourceLabel: '네이버 RSS 실측',
-      reason: '최근 공개 RSS 글을 직접 읽어 주제, 활동성, 광고 신호를 계산했습니다.',
+      sourceLabel: sourceStatus === 'post-view+public-rss' ? '개별 포스트 + 네이버 RSS 실측' : '네이버 RSS 실측',
+      reason: sourceStatus === 'post-view+public-rss'
+        ? '입력된 개별 포스트 본문과 최근 공개 RSS 글을 함께 읽어 계산했습니다.'
+        : '최근 공개 RSS 글을 직접 읽어 주제, 활동성, 광고 신호를 계산했습니다.',
+    };
+  }
+  if (sourceStatus === 'post-only') {
+    return {
+      level: '보통',
+      score: 68,
+      sourceLabel: '개별 포스트 실측',
+      reason: '입력된 개별 포스트 본문은 읽었지만 최근 RSS 보조 신호가 부족합니다.',
     };
   }
   if (sourceStatus === 'limited') {
@@ -531,12 +646,30 @@ async function collectPublicBlogSignals(url, mode, campaign) {
 async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {}) {
   const campaign = normalizeCampaign(campaignInput);
   const seed = hash(`${url}:${mode}:${campaign.industry}:${campaign.keyword}`);
-  const signals = await collectPublicBlogSignals(url, mode, campaign);
+  const [rssSignals, postSignals] = await Promise.all([
+    collectPublicBlogSignals(url, mode, campaign).catch(() => null),
+    collectPostSignals(url, campaign).catch(() => null),
+  ]);
+  if (!rssSignals && !postSignals) throw new Error('분석 가능한 공개 블로그/포스트 데이터를 찾지 못했습니다.');
+  const signals = rssSignals || {
+    sourceStatus: 'post-only',
+    subscriberSignal: 35 + (seed % 35),
+    topCompetitorStrength: 42 + (hash(`${campaign.keyword}:competition`) % 49),
+    posts: [{
+      title: postSignals.title,
+      daysAgo: 0,
+      topicHits: Math.max(1, Math.round((postSignals.topicFit || 0) / 25)),
+      hasExperience: postSignals.experienceFit >= 45,
+      adSignals: postSignals.adSignals.length ? postSignals.adSignals : ['개별 포스트'],
+      comments: 2 + (seed % 8),
+      likes: 5 + (seed % 18),
+    }],
+  };
   const latestPostDays = Math.min(...signals.posts.map((post) => post.daysAgo));
   const recentPostCount = signals.posts.filter((post) => post.daysAgo <= 30).length;
   const adPostCount = signals.posts.filter((post) => post.adSignals.some((signal) => ['제공', '협찬', '광고'].includes(signal))).length;
   const adRatio = Math.round((adPostCount / signals.posts.length) * 100);
-  const industryWords = [...(INDUSTRY_KEYWORDS[campaign.industry] || []), campaign.keyword];
+  const industryWords = keywordTerms(campaign);
   const topicHits = signals.posts.reduce((sum, post) => sum + post.topicHits + weightedTopicScore(post.title, industryWords), 0);
   const maxTopicHits = signals.posts.length * 5;
   const topicFit = Math.round(clamp((topicHits / maxTopicHits) * 100));
@@ -563,15 +696,22 @@ async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {})
     riskPenalty += 14;
   }
   if (topicFit < 45) {
-    riskFlags.push('캠페인 주제 적합도 낮음');
-    riskPenalty += 18;
+    riskFlags.push(postSignals ? '블로그 최근 주제 흐름 약함' : '캠페인 주제 적합도 낮음');
+    riskPenalty += postSignals ? 8 : 18;
+  }
+  if (postSignals && postSignals.topicFit < 45) {
+    riskFlags.push('개별 포스트 주제 적합도 낮음');
+    riskPenalty += 12;
   }
   if (keywordCompetition >= 82 && competitorSimilarity < 68) {
     riskFlags.push('키워드 경쟁 강도 높음');
     riskPenalty += 10;
   }
 
-  const exposureScore = Math.round(clamp(cRankFit * 0.36 + diaFit * 0.34 + competitorSimilarity * 0.2 + (100 - keywordCompetition) * 0.1 - riskPenalty));
+  const rssScore = cRankFit * 0.36 + diaFit * 0.34 + competitorSimilarity * 0.2 + (100 - keywordCompetition) * 0.1;
+  const exposureScore = postSignals
+    ? Math.round(clamp(postSignals.postFit * 0.62 + cRankFit * 0.14 + diaFit * 0.12 + competitorSimilarity * 0.07 + activityFit * 0.05 - riskPenalty * 0.35))
+    : Math.round(clamp(rssScore - riskPenalty));
   const grade = gradeFromScore(exposureScore);
   const recommendation = exposureScore >= 75
     ? '체험 후기형 원고'
@@ -579,8 +719,10 @@ async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {})
       ? '롱테일 키워드 후기'
       : '브랜드 인지도 보조 캠페인';
   const reasons = [
-    `${campaign.industryLabel}·${campaign.keyword} 맥락에서 최근 ${recentPostCount}개 글이 공개 신호로 확인되어 노출 가능성을 추정했습니다.`,
-    `주제 적합도 ${topicFit}점, 문서 적합도 ${diaFit}점으로 기존 글 흐름 안에 캠페인 원고가 들어갈 여지가 있습니다.`,
+    postSignals
+      ? `입력된 개별 포스트 "${postSignals.title || postSignals.logNo}" 본문을 직접 읽어 포스트 적합도 ${postSignals.postFit}점을 반영했습니다.`
+      : `${campaign.industryLabel}·${campaign.keyword} 맥락에서 최근 ${recentPostCount}개 글이 공개 신호로 확인되어 노출 가능성을 추정했습니다.`,
+    `블로그 최근 글 기준 주제 적합도 ${topicFit}점, 문서 적합도 ${diaFit}점으로 블로그 전체 흐름을 보조 반영했습니다.`,
     keywordCompetition >= 75
       ? `입력 키워드의 경쟁 강도가 ${keywordCompetition}점으로 높아 상위 노출은 보수적으로 봐야 합니다.`
       : `입력 키워드 경쟁 강도가 ${keywordCompetition}점으로 과열 구간은 아닙니다.`,
@@ -609,11 +751,16 @@ async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {})
       keywordCompetition,
       competitorSimilarity,
       activityFit,
+      postFit: postSignals?.postFit ?? null,
+      postTopicFit: postSignals?.topicFit ?? null,
+      postExperienceFit: postSignals?.experienceFit ?? null,
+      postQualityFit: postSignals?.qualityFit ?? null,
+      postSignals,
       riskPenalty,
       campaign,
       recentPostCount,
       latestPostDays,
-      sourceStatus: signals.sourceStatus,
+      sourceStatus: postSignals && rssSignals ? 'post-view+public-rss' : postSignals ? 'post-only' : signals.sourceStatus,
       recommendation,
       cautionReasons,
     },
@@ -742,6 +889,11 @@ function mapResult(row) {
     cRankFit: breakdown.cRankFit ?? null,
     diaFit: breakdown.diaFit ?? null,
     topicFit: breakdown.topicFit ?? null,
+    postFit: breakdown.postFit ?? null,
+    postTopicFit: breakdown.postTopicFit ?? null,
+    postExperienceFit: breakdown.postExperienceFit ?? null,
+    postQualityFit: breakdown.postQualityFit ?? null,
+    postSignals: breakdown.postSignals ?? null,
     keywordCompetition: breakdown.keywordCompetition ?? null,
     competitorSimilarity: breakdown.competitorSimilarity ?? null,
     campaign: breakdown.campaign ?? null,
@@ -1021,6 +1173,8 @@ app.get('/api/export', requireAuth, (req, res) => {
     'Decision',
     'Industry',
     'Keyword',
+    'PostFit',
+    'PostTopicFit',
     'TopicFit',
     'KeywordCompetition',
     'RecentActivity',
@@ -1036,6 +1190,8 @@ app.get('/api/export', requireAuth, (req, res) => {
     item.decision,
     item.category,
     item.campaign?.keyword || '',
+    item.postFit ?? '',
+    item.postTopicFit ?? '',
     item.topicFit ?? '',
     item.keywordCompetition ?? '',
     item.recentActivity,

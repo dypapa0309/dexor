@@ -192,6 +192,26 @@ button:disabled { opacity: .52; cursor: not-allowed; }
   color: var(--muted);
   font-size: 14px;
 }
+.title-with-help {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.icon-help {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--surface);
+}
+.icon-help:hover {
+  color: var(--brand);
+  border-color: var(--brand);
+}
 .actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .actions button, .actions .download { min-height: 34px; font-size: 13px; }
 .active {
@@ -435,6 +455,38 @@ tbody tr:hover { background: var(--panel); }
 }
 .modal h2 { font-size: 22px; margin: 8px 0 0; word-break: break-all; }
 .eyebrow { color: var(--brand); font-weight: 750; font-size: 13px; }
+.logic-modal { width: min(620px, 100%); }
+.logic-body {
+  display: grid;
+  gap: 14px;
+  padding-top: 16px;
+}
+.logic-body section {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 14px;
+  background: var(--panel);
+}
+.logic-body h3 {
+  margin: 0 0 7px;
+  font-size: 15px;
+}
+.logic-body p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+  font-size: 14px;
+}
+.formula-box {
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 10px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--ink);
+}
 .package-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

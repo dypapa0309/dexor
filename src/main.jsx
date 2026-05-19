@@ -6,6 +6,7 @@ import {
   FileSpreadsheet,
   Filter,
   FlaskConical,
+  HelpCircle,
   LogOut,
   Upload,
   Wallet,
@@ -56,6 +57,7 @@ function App() {
   const [onlySA, setOnlySA] = useState(false);
   const [hideCD, setHideCD] = useState(false);
   const [selected, setSelected] = useState(null);
+  const [logicOpen, setLogicOpen] = useState(false);
   const [billingOpen, setBillingOpen] = useState(false);
   const [selectedPackage, setSelectedPackage] = useState('credits_20');
   const [pendingPayment, setPendingPayment] = useState(null);
@@ -409,6 +411,7 @@ function App() {
               onToggleCD={() => setHideCD((value) => !value)}
               onDeep={startDeep}
               onOpen={setSelected}
+              onHelp={() => setLogicOpen(true)}
               busy={busy}
               job={job}
               compact
@@ -427,6 +430,7 @@ function App() {
               onToggleCD={() => setHideCD((value) => !value)}
               onDeep={startDeep}
               onOpen={setSelected}
+              onHelp={() => setLogicOpen(true)}
               busy={busy}
               job={job}
               onAnalyze={() => setPage('analysis')}
@@ -477,6 +481,7 @@ function App() {
         />
       )}
       {selected && <DetailModal result={selected} onClose={() => setSelected(null)} />}
+      {logicOpen && <AnalysisLogicModal onClose={() => setLogicOpen(false)} />}
     </main>
   );
 }
@@ -519,6 +524,7 @@ function ResultsPanel({
   onToggleCD,
   onDeep,
   onOpen,
+  onHelp,
   busy,
   job,
   onAnalyze,
@@ -528,7 +534,12 @@ function ResultsPanel({
     <>
       <div className="section-title">
         <div>
-          <h2>결과</h2>
+          <div className="title-with-help">
+            <h2>결과</h2>
+            <button className="icon-help" type="button" onClick={onHelp} aria-label="분석 로직 보기" title="분석 로직 보기">
+              <HelpCircle size={17} />
+            </button>
+          </div>
           {!compact && <p>노출가능성 점수가 높은 후보부터 검토할 수 있습니다.</p>}
         </div>
         <div className="actions">
@@ -791,9 +802,46 @@ function paymentStatus(status) {
   }[status] || status;
 }
 
+function AnalysisLogicModal({ onClose }) {
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <div className="modal logic-modal" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-head">
+          <div>
+            <span className="eyebrow">분석 로직</span>
+            <h2>결과는 이렇게 계산됩니다</h2>
+          </div>
+          <button onClick={onClose}>닫기</button>
+        </div>
+        <div className="logic-body">
+          <section>
+            <h3>1. 개별 포스트 직접 분석</h3>
+            <p>입력 URL에 글 번호가 있으면 제목, 본문, 발행일, 이미지, 광고성 표현을 읽고 포스트 적합도를 계산합니다.</p>
+          </section>
+          <section>
+            <h3>2. 블로그 최근 흐름 보조 분석</h3>
+            <p>RSS 최근 글에서 활동성, 주제 일관성, 광고성 비율, 문서형 후기 신호를 확인합니다.</p>
+          </section>
+          <section>
+            <h3>3. 최종 점수 산식</h3>
+            <p>개별 포스트가 있으면 포스트 적합도 62%를 중심으로 C-Rank형 적합도, 문서 적합도, 상위권 유사도, 최근 활동성을 보조 반영합니다.</p>
+            <div className="formula-box">포스트 62% + C-Rank 14% + 문서 12% + 유사도 7% + 활동성 5% - 리스크 감점</div>
+          </section>
+          <section>
+            <h3>4. 리스크 감점</h3>
+            <p>최근 활동 약함, 대가성 콘텐츠 비중 높음, 블로그 최근 주제 흐름 약함, 개별 포스트 주제 불일치가 있으면 점수가 내려갑니다.</p>
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DetailModal({ result, onClose }) {
   const scoreCards = [
     ['exposureScore', '노출가능성', result.exposureScore ?? result.score],
+    ['postFit', '개별 포스트 적합도', result.postFit],
+    ['postTopicFit', '포스트 주제 적합도', result.postTopicFit],
     ['cRankFit', 'C-Rank형 적합도', result.cRankFit],
     ['diaFit', '문서 적합도', result.diaFit],
     ['topicFit', '주제 적합도', result.topicFit],
@@ -819,6 +867,13 @@ function DetailModal({ result, onClose }) {
           <section>
             <h3>판단 이유</h3>
             <ul>{result.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+            {result.postSignals && (
+              <p className="risk">
+                개별 포스트: {result.postSignals.title || result.postSignals.logNo}
+                {result.postSignals.publishedAtLabel ? ` · ${result.postSignals.publishedAtLabel}` : ''}
+                {` · 본문 ${result.postSignals.bodyLength?.toLocaleString?.() || result.postSignals.bodyLength || 0}자`}
+              </p>
+            )}
             {result.riskFlags.length > 0 && <p className="risk">위험 플래그: {result.riskFlags.join(', ')}</p>}
           </section>
           <section>
