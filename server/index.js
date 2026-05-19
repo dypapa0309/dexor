@@ -10,10 +10,14 @@ import JSZip from 'jszip';
 import multer from 'multer';
 
 const app = express();
-const upload = multer({ storage: multer.memoryStorage() });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
 const PORT = process.env.PORT || 4000;
 const APP_URL = process.env.APP_URL || 'http://127.0.0.1:5173';
 const API_URL = process.env.API_URL || `http://127.0.0.1:${PORT}`;
+const isProduction = process.env.NODE_ENV === 'production';
 const SESSION_COOKIE = 'dexor_session';
 const CONCURRENCY = 5;
 const CREDIT_COST = { quick: 1, deep: 3 };
@@ -46,7 +50,7 @@ const INDUSTRY_LABELS = {
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const appRoot = join(__dirname, '..');
 const distDir = join(appRoot, 'dist');
-const dataDir = join(__dirname, '..', 'data');
+const dataDir = process.env.DEXOR_DATA_DIR || join(__dirname, '..', 'data');
 mkdirSync(dataDir, { recursive: true });
 const db = new DatabaseSync(join(dataDir, 'dexor.sqlite'));
 db.exec('PRAGMA journal_mode = WAL;');
@@ -198,6 +202,14 @@ function requireAuth(req, res, next) {
   if (!user) return res.status(401).json({ message: '로그인이 필요합니다.' });
   req.user = user;
   next();
+}
+
+function handleUpload(req, res, next) {
+  upload.single('file')(req, res, (error) => {
+    if (!error) return next();
+    if (error.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ message: '업로드 파일은 5MB 이하만 지원합니다.' });
+    return res.status(400).json({ message: '업로드 파일을 처리하지 못했습니다.' });
+  });
 }
 
 function setSession(res, userId) {
@@ -356,6 +368,15 @@ function decisionFromGrade(grade) {
   return '섭외 비추천';
 }
 
+function compareGrades(a, b) {
+  const order = { S: 5, A: 4, B: 3, C: 2, D: 1 };
+  return (order[a] || 0) - (order[b] || 0);
+}
+
+function minGrade(...grades) {
+  return grades.filter(Boolean).sort(compareGrades)[0] || 'D';
+}
+
 function normalizeCampaign(input = {}) {
   const industry = INDUSTRY_LABELS[input.industry] ? input.industry : 'food';
   const keyword = String(input.keyword || INDUSTRY_LABELS[industry]).trim().slice(0, 40) || INDUSTRY_LABELS[industry];
@@ -371,33 +392,94 @@ function weightedTopicScore(text, words) {
   return words.reduce((sum, word) => sum + (source.includes(String(word).toLowerCase()) ? 1 : 0), 0);
 }
 
-function buildSyntheticPublicSignals(url, mode, campaign) {
-  const seed = hash(`${url}:${mode}:${campaign.industry}:${campaign.keyword}`);
-  const industryWords = INDUSTRY_KEYWORDS[campaign.industry] || [];
-  const mixedWords = Object.values(INDUSTRY_KEYWORDS).flat();
-  const postCount = mode === 'deep' ? 24 : 10;
-  const offTopicEvery = 3 + (seed % 4);
-  const adEvery = 2 + (seed % 5);
-  const posts = Array.from({ length: postCount }, (_, index) => {
-    const onTopic = index % offTopicEvery !== 0;
-    const adLike = index % adEvery === 0;
-    const word = onTopic ? industryWords[(seed + index) % industryWords.length] : mixedWords[(seed + index) % mixedWords.length];
-    const daysAgo = index * (2 + (seed % 4)) + (seed % 6);
+function normalizeLegacyIndex(value = '') {
+  const text = String(value).trim();
+  if (!text) return null;
+  if (/초급|준최\s*1|준최\s*2|low|beginner/i.test(text)) return '초급';
+  if (/중급|준최\s*3|준최\s*4|mid|middle/i.test(text)) return '중급';
+  if (/고급|최적|준최\s*5|high|advanced/i.test(text)) return '고급';
+  return text.slice(0, 20);
+}
+
+function dataConfidenceFromResult(result) {
+  const sourceStatus = result.breakdown?.sourceStatus;
+  if (sourceStatus === 'public-rss') {
     return {
-      title: `${campaign.keyword} ${word} ${index + 1}번째 실제 방문 후기`,
-      daysAgo,
-      topicHits: onTopic ? 2 + ((seed + index) % 3) : (seed + index) % 2,
-      hasExperience: (seed + index) % 5 !== 0,
-      adSignals: adLike ? ['제공', '협찬'] : ['직접 방문'],
-      comments: 2 + ((seed + index) % 24),
-      likes: 5 + ((seed + index * 7) % 80),
+      level: '높음',
+      score: 88,
+      sourceLabel: '네이버 RSS 실측',
+      reason: '최근 공개 RSS 글을 직접 읽어 주제, 활동성, 광고 신호를 계산했습니다.',
     };
-  });
+  }
+  if (sourceStatus === 'limited') {
+    return {
+      level: '낮음',
+      score: 32,
+      sourceLabel: '접근 제한',
+      reason: '공개 데이터 접근이 제한되어 추정 신호 비중이 큽니다.',
+    };
+  }
   return {
-    sourceStatus: seed % 43 === 0 ? 'limited' : 'public',
-    subscriberSignal: 20 + (seed % 80),
-    topCompetitorStrength: 42 + (hash(`${campaign.keyword}:competition`) % 49),
-    posts,
+    level: '보통',
+    score: 58,
+    sourceLabel: '공개 신호 추정',
+    reason: 'RSS 실측이 부족해 공개 패턴 기반 추정값을 함께 사용했습니다.',
+  };
+}
+
+function strengthenEvaluation(result, legacyIndexInput = '') {
+  const dataConfidence = dataConfidenceFromResult(result);
+  const legacyIndex = normalizeLegacyIndex(legacyIndexInput);
+  const verificationFlags = [];
+  let scorePenalty = 0;
+  let gradeCap = null;
+
+  verificationFlags.push('최근 상위노출 검증 미완료');
+  if (result.grade === 'S') gradeCap = 'A';
+
+  if (dataConfidence.level === '낮음') {
+    verificationFlags.push('데이터 신뢰도 낮음');
+    scorePenalty += 16;
+    gradeCap = minGrade(gradeCap, 'B');
+  } else if (dataConfidence.level === '보통') {
+    verificationFlags.push('추정 데이터 포함');
+    scorePenalty += 7;
+  }
+
+  if (legacyIndex === '초급' && ['S', 'A'].includes(result.grade)) {
+    verificationFlags.push('기존 지수 초급 대비 DEXOR 고득점');
+    scorePenalty += 10;
+    gradeCap = minGrade(gradeCap, 'B');
+  } else if (legacyIndex === '중급' && result.grade === 'S') {
+    verificationFlags.push('기존 지수 중급 대비 DEXOR S등급');
+    scorePenalty += 5;
+  }
+
+  if (result.riskFlags.length > 0) {
+    verificationFlags.push(...result.riskFlags);
+    if (result.grade === 'S') gradeCap = minGrade(gradeCap, 'A');
+  }
+
+  const strengthenedScore = Math.round(clamp(result.score - scorePenalty));
+  const scoreGrade = gradeFromScore(strengthenedScore);
+  const strengthenedGrade = minGrade(scoreGrade, gradeCap || result.grade);
+  const status = strengthenedGrade === result.grade ? '유지' : `${result.grade} -> ${strengthenedGrade}`;
+
+  return {
+    ...result,
+    originalGrade: result.grade,
+    originalScore: result.score,
+    strengthenedScore,
+    strengthenedGrade,
+    strengthenedDecision: decisionFromGrade(strengthenedGrade),
+    dataConfidence,
+    legacyIndex,
+    verificationFlags: [...new Set(verificationFlags)],
+    gradeStatus: status,
+    searchValidation: {
+      status: '미검증',
+      label: '최근 상위노출 검증 미완료',
+    },
   };
 }
 
@@ -407,45 +489,42 @@ function stripHtml(input = '') {
 
 async function collectPublicBlogSignals(url, mode, campaign) {
   const blogId = getBlogId(url);
-  if (!blogId) return buildSyntheticPublicSignals(url, mode, campaign);
-  try {
-    const response = await fetch(`https://rss.blog.naver.com/${encodeURIComponent(blogId)}.xml`, {
-      signal: AbortSignal.timeout(4500),
-      headers: { 'User-Agent': 'DEXOR exposure analysis bot' },
-    });
-    if (!response.ok) throw new Error(`RSS ${response.status}`);
-    const xml = await response.text();
-    const parsed = new XMLParser({ ignoreAttributes: false }).parse(xml);
-    const rawItems = asArray(parsed?.rss?.channel?.item).slice(0, mode === 'deep' ? 30 : 12);
-    if (rawItems.length === 0) throw new Error('empty rss');
-    const seed = hash(`${url}:${mode}:${campaign.industry}:${campaign.keyword}`);
-    const industryWords = INDUSTRY_KEYWORDS[campaign.industry] || [];
-    const posts = rawItems.map((item, index) => {
-      const title = stripHtml(item.title);
-      const body = `${title} ${stripHtml(item.description)}`;
-      const pubDate = item.pubDate ? new Date(item.pubDate) : null;
-      const daysAgo = pubDate && !Number.isNaN(pubDate.getTime())
-        ? Math.max(0, Math.floor((Date.now() - pubDate.getTime()) / (1000 * 60 * 60 * 24)))
-        : index * 7;
-      const adSignals = ['제공', '협찬', '광고', '체험단', '원고료', '소정의'].filter((word) => body.includes(word));
-      return {
-        title: title || `${campaign.keyword} 공개 글 ${index + 1}`,
-        daysAgo,
-        topicHits: weightedTopicScore(body, [...industryWords, campaign.keyword]),
-        hasExperience: ['방문', '사용', '먹어', '다녀', '직접', '후기', '느꼈'].some((word) => body.includes(word)),
-        adSignals: adSignals.length ? adSignals : ['공개 글'],
-        comments: 2 + ((seed + index) % 16),
-        likes: 5 + ((seed + index * 7) % 45),
-      };
-    });
+  if (!blogId) throw new Error('유효한 네이버 블로그 ID를 찾지 못했습니다.');
+
+  const response = await fetch(`https://rss.blog.naver.com/${encodeURIComponent(blogId)}.xml`, {
+    signal: AbortSignal.timeout(4500),
+    headers: { 'User-Agent': 'DEXOR exposure analysis bot' },
+  });
+  if (!response.ok) throw new Error(`네이버 RSS 접근 실패 (${response.status})`);
+  const xml = await response.text();
+  const parsed = new XMLParser({ ignoreAttributes: false }).parse(xml);
+  const rawItems = asArray(parsed?.rss?.channel?.item).slice(0, mode === 'deep' ? 30 : 12);
+  if (rawItems.length === 0) throw new Error('분석 가능한 공개 RSS 글이 없습니다.');
+  const seed = hash(`${url}:${mode}:${campaign.industry}:${campaign.keyword}`);
+  const industryWords = INDUSTRY_KEYWORDS[campaign.industry] || [];
+  const posts = rawItems.map((item, index) => {
+    const title = stripHtml(item.title);
+    const body = `${title} ${stripHtml(item.description)}`;
+    const pubDate = item.pubDate ? new Date(item.pubDate) : null;
+    const daysAgo = pubDate && !Number.isNaN(pubDate.getTime())
+      ? Math.max(0, Math.floor((Date.now() - pubDate.getTime()) / (1000 * 60 * 60 * 24)))
+      : index * 7;
+    const adSignals = ['제공', '협찬', '광고', '체험단', '원고료', '소정의'].filter((word) => body.includes(word));
     return {
-      sourceStatus: 'public-rss',
-      subscriberSignal: 30 + (seed % 65),
-      topCompetitorStrength: 42 + (hash(`${campaign.keyword}:competition`) % 49),
-      posts,
+      title: title || `${campaign.keyword} 공개 글 ${index + 1}`,
+      daysAgo,
+      topicHits: weightedTopicScore(body, [...industryWords, campaign.keyword]),
+      hasExperience: ['방문', '사용', '먹어', '다녀', '직접', '후기', '느꼈'].some((word) => body.includes(word)),
+      adSignals: adSignals.length ? adSignals : ['공개 글'],
+      comments: 2 + ((seed + index) % 16),
+      likes: 5 + ((seed + index * 7) % 45),
     };
-  } catch {
-    return buildSyntheticPublicSignals(url, mode, campaign);
+  });
+  return {
+    sourceStatus: 'public-rss',
+    subscriberSignal: 30 + (seed % 65),
+    topCompetitorStrength: 42 + (hash(`${campaign.keyword}:competition`) % 49),
+    posts,
   }
 }
 
@@ -633,8 +712,9 @@ async function processTask(task) {
   }
   const finalJob = db.prepare('SELECT * FROM analysis_jobs WHERE id = ?').get(task.jobId);
   const failedAll = finalJob.failed === finalJob.total;
-  if (failedAll && !finalJob.credit_refunded) {
-    addCredits(task.userId, finalJob.credit_cost, 'analysis_refund', task.jobId);
+  const refundAmount = finalJob.failed * CREDIT_COST[task.mode];
+  if (refundAmount > 0 && !finalJob.credit_refunded) {
+    addCredits(task.userId, refundAmount, 'analysis_refund', task.jobId);
     db.prepare('UPDATE analysis_jobs SET credit_refunded = 1 WHERE id = ?').run(task.jobId);
   }
   db.prepare('UPDATE analysis_jobs SET status = ?, completed_at = ? WHERE id = ?')
@@ -688,8 +768,15 @@ function consumeOAuthState(state, provider) {
   return true;
 }
 
+function ensureProviderConfigured(res, provider, hasKeys) {
+  if (hasKeys || !isProduction) return true;
+  res.status(503).json({ message: `${provider} OAuth 설정이 필요합니다.` });
+  return false;
+}
+
 function oauthRedirect(res, provider, authUrl, devProfile) {
   if (authUrl) return res.redirect(authUrl);
+  if (isProduction) return res.status(503).json({ message: `${provider} OAuth 설정이 필요합니다.` });
   const user = upsertOAuthUser(devProfile);
   setSession(res, user.id);
   return res.redirect(`${APP_URL}/?login=dev-${provider}`);
@@ -747,6 +834,7 @@ function getPackage(packageId) {
 
 async function approveTossPayment({ paymentKey, orderId, amount }) {
   if (!process.env.TOSS_SECRET_KEY) {
+    if (isProduction) throw new Error('Toss 결제 secret 설정이 필요합니다.');
     return {
       paymentKey,
       orderId,
@@ -781,8 +869,9 @@ app.get('/api/me', (req, res) => {
 });
 
 app.get('/api/auth/naver/start', (req, res) => {
-  const state = storeOAuthState('naver');
   const hasKeys = process.env.NAVER_CLIENT_ID && process.env.NAVER_CLIENT_SECRET;
+  if (!ensureProviderConfigured(res, 'Naver', hasKeys)) return;
+  const state = storeOAuthState('naver');
   const authUrl = hasKeys ? new URL('https://nid.naver.com/oauth2.0/authorize') : null;
   if (authUrl) {
     authUrl.searchParams.set('response_type', 'code');
@@ -810,8 +899,9 @@ app.get('/api/auth/naver/callback', async (req, res) => {
 });
 
 app.get('/api/auth/google/start', (req, res) => {
-  const state = storeOAuthState('google');
   const hasKeys = process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET;
+  if (!ensureProviderConfigured(res, 'Google', hasKeys)) return;
+  const state = storeOAuthState('google');
   const authUrl = hasKeys ? new URL('https://accounts.google.com/o/oauth2/v2/auth') : null;
   if (authUrl) {
     authUrl.searchParams.set('response_type', 'code');
@@ -866,7 +956,7 @@ app.post('/api/analyze/single', requireAuth, (req, res) => {
   }
 });
 
-app.post('/api/analyze/bulk', requireAuth, upload.single('file'), async (req, res) => {
+app.post('/api/analyze/bulk', requireAuth, handleUpload, async (req, res) => {
   try {
     const pastedUrls = extractUrlsFromText(req.body.urls || '');
     const fileUrls = req.file ? await extractUrlsFromUpload(req.file) : [];
@@ -885,6 +975,24 @@ app.post('/api/analyze/deep', requireAuth, (req, res) => {
     res.status(202).json(createJob(req.user.id, urls, 'deep', req.body));
   } catch (error) {
     res.status(error.status || 500).json(error.payload || { message: error.message });
+  }
+});
+
+app.post('/api/analyze/test-strengthened', requireAuth, async (req, res) => {
+  try {
+    const urls = Array.isArray(req.body.urls) ? req.body.urls : extractUrlsFromText(req.body.urls || '');
+    const uniqueUrls = [...new Set(urls.map(normalizeBlogUrl).filter(Boolean))].slice(0, 20);
+    const legacyIndexes = req.body.legacyIndexes && typeof req.body.legacyIndexes === 'object' ? req.body.legacyIndexes : {};
+    if (uniqueUrls.length === 0) return res.status(400).json({ message: '테스트할 네이버 블로그 URL을 찾지 못했습니다.' });
+
+    const results = [];
+    for (const url of uniqueUrls) {
+      const result = await analyzeExposurePotential(url, 'quick', req.body);
+      results.push(strengthenEvaluation(result, legacyIndexes[url] || legacyIndexes[getBlogId(url)] || ''));
+    }
+    res.json({ results });
+  } catch (error) {
+    res.status(500).json({ message: error.message });
   }
 });
 
@@ -965,6 +1073,9 @@ app.get('/api/billing/payments', requireAuth, (req, res) => {
 });
 
 app.post('/api/billing/checkout/virtual-account', requireAuth, (req, res) => {
+  if (isProduction && (!process.env.TOSS_CLIENT_KEY || !process.env.TOSS_SECRET_KEY)) {
+    return res.status(503).json({ message: 'Toss 결제 설정이 필요합니다.' });
+  }
   const selectedPackage = getPackage(req.body.packageId);
   if (!selectedPackage) return res.status(400).json({ message: '유효한 크레딧 상품을 선택해주세요.' });
   const orderId = `DEXOR-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
@@ -1034,9 +1145,12 @@ app.post('/api/billing/toss/success', requireAuth, async (req, res) => {
 
 app.post('/api/webhooks/toss/deposit', (req, res) => {
   const { orderId, status, secret } = req.body;
+  if (!['DONE', 'WAITING_FOR_DEPOSIT'].includes(status)) {
+    return res.status(400).json({ message: '지원하지 않는 입금 상태입니다.' });
+  }
   const payment = db.prepare('SELECT * FROM payments WHERE order_id = ?').get(orderId);
   if (!payment) return res.status(404).json({ message: '결제를 찾을 수 없습니다.' });
-  if (payment.secret && payment.secret !== secret) return res.status(403).json({ message: '웹훅 secret이 일치하지 않습니다.' });
+  if (!payment.secret || payment.secret !== secret) return res.status(403).json({ message: '웹훅 secret이 일치하지 않습니다.' });
   if (status === 'DONE' && payment.status !== 'paid') {
     db.prepare('UPDATE payments SET status = ?, updated_at = ? WHERE id = ?').run('paid', nowIso(), payment.id);
     addCredits(payment.user_id, payment.credits, 'payment', payment.id);

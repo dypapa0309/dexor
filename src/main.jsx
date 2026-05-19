@@ -5,6 +5,7 @@ import {
   Download,
   FileSpreadsheet,
   Filter,
+  FlaskConical,
   LogOut,
   Upload,
   Wallet,
@@ -26,8 +27,22 @@ const industryOptions = [
   { value: 'pet', label: '반려동물' },
 ];
 
+function parseLegacyIndexInput(text = '') {
+  return String(text)
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .reduce((acc, line) => {
+      const [rawUrl, rawIndex] = line.split(/[,\t]/).map((item) => item?.trim());
+      const blogId = rawUrl?.match(/blog\.naver\.com\/([a-zA-Z0-9._-]+)/i)?.[1] || rawUrl;
+      if (blogId && rawIndex) acc[blogId] = rawIndex;
+      return acc;
+    }, {});
+}
+
 function App() {
-  const [page, setPage] = useState('analysis');
+  const initialPage = new URLSearchParams(window.location.search).get('page');
+  const [page, setPage] = useState(['analysis', 'results', 'test', 'billing'].includes(initialPage) ? initialPage : 'analysis');
   const [me, setMe] = useState({ user: null, credits: null });
   const [dashboard, setDashboard] = useState(null);
   const [packages, setPackages] = useState([]);
@@ -44,6 +59,9 @@ function App() {
   const [billingOpen, setBillingOpen] = useState(false);
   const [selectedPackage, setSelectedPackage] = useState('credits_20');
   const [pendingPayment, setPendingPayment] = useState(null);
+  const [testUrls, setTestUrls] = useState('');
+  const [testLegacyIndexes, setTestLegacyIndexes] = useState('');
+  const [testResults, setTestResults] = useState([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -200,6 +218,28 @@ function App() {
     }
   }
 
+  async function startStrengthenedTest() {
+    setBusy(true);
+    setError('');
+    try {
+      const payload = await apiJson(`${API_BASE}/analyze/test-strengthened`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          urls: testUrls,
+          industry,
+          keyword,
+          legacyIndexes: parseLegacyIndexInput(testLegacyIndexes),
+        }),
+      });
+      setTestResults(payload.results);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function createVirtualAccount() {
     setBusy(true);
     setError('');
@@ -263,10 +303,12 @@ function App() {
     }
   }
 
-  const progress = job && job.total ? Math.round((job.completed / job.total) * 100) : 0;
+  const finishedCount = job ? (job.completed || 0) + (job.failed || 0) : 0;
+  const progress = job && job.total ? Math.round((finishedCount / job.total) * 100) : 0;
   const pageTitle = {
     analysis: '분석',
     results: '결과',
+    test: '테스트',
     billing: '결제',
   }[page];
 
@@ -280,6 +322,7 @@ function App() {
         <nav className="side-nav">
           <button className={page === 'analysis' ? 'side-link active' : 'side-link'} onClick={() => setPage('analysis')}>분석</button>
           <button className={page === 'results' ? 'side-link active' : 'side-link'} onClick={() => setPage('results')}>결과</button>
+          <button className={page === 'test' ? 'side-link active' : 'side-link'} onClick={() => setPage('test')}>테스트</button>
           <button className={page === 'billing' ? 'side-link active' : 'side-link'} onClick={() => setPage('billing')}>결제</button>
         </nav>
       </aside>
@@ -349,9 +392,9 @@ function App() {
 
             {job && (
               <div className="job-box">
-                <div><b>{job.mode === 'deep' ? '정밀 분석' : '빠른 분석'}</b><span>{job.completed}/{job.total}</span></div>
+                <div><b>{job.mode === 'deep' ? '정밀 분석' : '빠른 분석'}</b><span>{finishedCount}/{job.total}</span></div>
                 <progress value={progress} max="100" />
-                <small>{job.creditCost}크레딧 차감</small>
+                <small>{job.creditCost}크레딧 차감{job.failed ? ` · 실패 ${job.failed}건 환불` : ''}</small>
               </div>
             )}
           </div>
@@ -390,6 +433,20 @@ function App() {
             />
           </div>
         </section>
+      ) : page === 'test' ? (
+        <StrengthTestPage
+          industry={industry}
+          keyword={keyword}
+          testUrls={testUrls}
+          legacyIndexes={testLegacyIndexes}
+          results={testResults}
+          busy={busy}
+          onIndustry={setIndustry}
+          onKeyword={setKeyword}
+          onUrls={setTestUrls}
+          onLegacyIndexes={setTestLegacyIndexes}
+          onRun={startStrengthenedTest}
+        />
       ) : (
         <section className="page-workspace">
           <BillingView
@@ -526,6 +583,103 @@ function ResultsTable({ rows, onOpen, onAnalyze }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function StrengthTestPage({
+  industry,
+  keyword,
+  testUrls,
+  legacyIndexes,
+  results,
+  busy,
+  onIndustry,
+  onKeyword,
+  onUrls,
+  onLegacyIndexes,
+  onRun,
+}) {
+  const downgradedCount = results.filter((item) => item.originalGrade !== item.strengthenedGrade).length;
+  return (
+    <section className="test-workspace">
+      <div className="test-controls">
+        <div className="section-title">
+          <div>
+            <h2>강화 로직 테스트</h2>
+            <p>크레딧 차감 없이 강화 등급, 데이터 신뢰도, 기존 지수 충돌을 비교합니다.</p>
+          </div>
+        </div>
+        <div className="input-block">
+          <label>캠페인 업종</label>
+          <select value={industry} onChange={(event) => onIndustry(event.target.value)}>
+            {industryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </select>
+          <label>핵심 키워드</label>
+          <input value={keyword} onChange={(event) => onKeyword(event.target.value)} placeholder="예: 여성 패션 코디" />
+          <label>테스트 URL</label>
+          <textarea value={testUrls} onChange={(event) => onUrls(event.target.value)} placeholder="네이버 블로그 URL을 줄바꿈으로 붙여넣으세요." />
+          <label>기존 지수 매칭</label>
+          <textarea
+            className="compact-textarea"
+            value={legacyIndexes}
+            onChange={(event) => onLegacyIndexes(event.target.value)}
+            placeholder="blogId 또는 URL, 기존지수&#10;example_blog, 초급"
+          />
+          <button className="primary full" onClick={onRun} disabled={busy}><FlaskConical size={18} /> 강화 로직 테스트</button>
+        </div>
+      </div>
+
+      <div className="test-results">
+        <div className="section-title">
+          <div>
+            <h2>비교 결과</h2>
+            <p>{results.length ? `${results.length}개 중 ${downgradedCount}개가 강화 기준에서 조정되었습니다.` : '테스트를 실행하면 비교 결과가 표시됩니다.'}</p>
+          </div>
+        </div>
+        {results.length ? <StrengthResults rows={results} /> : <div className="empty small">테스트 결과가 없습니다.</div>}
+      </div>
+    </section>
+  );
+}
+
+function StrengthResults({ rows }) {
+  return (
+    <div className="strength-list">
+      {rows.map((item) => (
+        <article className="strength-card" key={item.id}>
+          <header>
+            <div>
+              <b>{item.url}</b>
+              <span>{item.category} · {item.campaign?.keyword || '-'} · 기존 지수 {item.legacyIndex || '없음'}</span>
+            </div>
+            <div className="grade-compare">
+              <span className="badge">{item.originalGrade} {item.originalScore}</span>
+              <span className="arrow">→</span>
+              <span className="badge strong">{item.strengthenedGrade} {item.strengthenedScore}</span>
+            </div>
+          </header>
+          <div className="signal-grid">
+            <Signal label="데이터 신뢰도" value={`${item.dataConfidence.level} ${item.dataConfidence.score}`} detail={item.dataConfidence.sourceLabel} />
+            <Signal label="주제 적합도" value={item.topicFit ?? '-'} detail={`최근 글 ${item.recentPostCount ?? '-'}개`} />
+            <Signal label="문서 적합도" value={item.diaFit ?? '-'} detail={`광고성 ${item.adRatio}%`} />
+            <Signal label="상위노출 검증" value={item.searchValidation.label} detail="정밀 단계에서 검증 예정" />
+          </div>
+          <div className="flag-row">
+            {item.verificationFlags.map((flag) => <span key={flag}>{flag}</span>)}
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function Signal({ label, value, detail }) {
+  return (
+    <div className="signal">
+      <span>{label}</span>
+      <b>{value}</b>
+      <small>{detail}</small>
     </div>
   );
 }

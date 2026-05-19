@@ -314,6 +314,98 @@ tbody tr:hover { background: var(--panel); }
 }
 .empty.small { min-height: 96px; }
 
+.test-workspace {
+  padding: 0 20px 56px;
+  display: grid;
+  grid-template-columns: 360px minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.test-controls,
+.test-results {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 18px;
+}
+.compact-textarea { min-height: 116px; }
+.strength-list {
+  display: grid;
+  gap: 12px;
+}
+.strength-card {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 14px;
+  background: var(--surface);
+}
+.strength-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 16px;
+}
+.strength-card header div:first-child {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.strength-card header b {
+  overflow-wrap: anywhere;
+}
+.strength-card header span {
+  color: var(--muted);
+  font-size: 13px;
+}
+.grade-compare {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px !important;
+  white-space: nowrap;
+}
+.badge.strong {
+  color: #0f766e;
+  border-color: #99f6e4;
+  background: #f0fdfa;
+}
+.arrow { color: var(--muted); }
+.signal-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+.signal {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  display: grid;
+  gap: 5px;
+}
+.signal span,
+.signal small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.signal b {
+  font-size: 16px;
+  overflow-wrap: anywhere;
+}
+.flag-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.flag-row span {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 12px;
+  color: var(--ink);
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -448,8 +540,9 @@ article span { color: var(--muted); font-size: 14px; }
 }
 
 @media (max-width: 980px) {
-  .headline, .login-panel, .workspace { grid-template-columns: 1fr; }
+  .headline, .login-panel, .workspace, .test-workspace { grid-template-columns: 1fr; }
   .summary-bar { grid-template-columns: repeat(3, 1fr); }
+  .signal-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
 @media (max-width: 640px) {
@@ -459,7 +552,8 @@ article span { color: var(--muted); font-size: 14px; }
   }
   .topbar nav { flex-wrap: wrap; }
   .headline h1 { font-size: 30px; }
-  .summary-bar, .grade-strip, .package-grid, .breakdown, .detail-grid { grid-template-columns: 1fr; }
+  .summary-bar, .grade-strip, .package-grid, .breakdown, .detail-grid, .signal-grid { grid-template-columns: 1fr; }
+  .strength-card header { display: grid; }
   .section-title { align-items: stretch; flex-direction: column; }
   .actions button, .actions .download { flex: 1 1 130px; }
   .payment-row {

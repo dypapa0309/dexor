@@ -5,9 +5,15 @@ services:
     plan: starter
     buildCommand: npm install && npm run build
     startCommand: npm run start
+    disk:
+      name: dexor-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
+      - key: DEXOR_DATA_DIR
+        value: /var/data
       - key: APP_URL
         sync: false
       - key: API_URL
