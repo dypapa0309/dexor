@@ -56,7 +56,30 @@ const db = new DatabaseSync(join(dataDir, 'dexor.sqlite'));
 db.exec('PRAGMA journal_mode = WAL;');
 db.exec('PRAGMA foreign_keys = ON;');
 
-app.use(cors({ origin: APP_URL, credentials: true }));
+function allowedOrigins(appUrl) {
+  const origins = new Set([
+    'http://127.0.0.1:5173',
+    'http://localhost:5173',
+  ]);
+  const configured = String(appUrl || '').trim().replace(/\/$/, '');
+  if (configured) {
+    origins.add(configured);
+    if (!/^https?:\/\//i.test(configured)) {
+      origins.add(`https://${configured}`);
+      origins.add(`http://${configured}`);
+    }
+  }
+  return origins;
+}
+
+const corsOrigins = allowedOrigins(APP_URL);
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || corsOrigins.has(origin)) return callback(null, true);
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
+}));
 app.use(express.json({ limit: '2mb' }));
 
 const queue = [];
@@ -291,16 +314,15 @@ function spendCredits(userId, amount, reason, refId) {
 function parseBlogUrl(raw) {
   if (!raw || typeof raw !== 'string') return null;
   const trimmed = raw.trim();
-  let match = trimmed.match(/(?:https?:\/\/)?(?:m\.)?blog\.naver\.com\/([a-zA-Z0-9._-]+)(?:\/([0-9]+))?/i);
-  if (match) return { blogId: match[1], logNo: match[2] || null };
-  match = trimmed.match(/[?&]blogId=([a-zA-Z0-9._-]+).*?[?&]logNo=([0-9]+)/i)
+  let match = trimmed.match(/[?&]blogId=([a-zA-Z0-9._-]+).*?[?&]logNo=([0-9]+)/i)
     || trimmed.match(/[?&]logNo=([0-9]+).*?[?&]blogId=([a-zA-Z0-9._-]+)/i);
-  if (!match) return null;
-  if (/blogId=/i.test(match[0]) && /logNo=/i.test(match[0])) {
+  if (match && /blogId=/i.test(match[0]) && /logNo=/i.test(match[0])) {
     return /[?&]blogId=/i.test(match[0])
       ? { blogId: match[1], logNo: match[2] }
       : { blogId: match[2], logNo: match[1] };
   }
+  match = trimmed.match(/(?:https?:\/\/)?(?:m\.)?blog\.naver\.com\/([a-zA-Z0-9._-]+)(?:\/([0-9]+))?/i);
+  if (match) return { blogId: match[1], logNo: match[2] || null };
   return null;
 }
 
@@ -449,13 +471,33 @@ async function collectPostSignals(url, campaign) {
   const logNo = getLogNo(url);
   if (!blogId || !logNo) return null;
 
-  const postUrl = `https://blog.naver.com/PostView.naver?blogId=${encodeURIComponent(blogId)}&logNo=${encodeURIComponent(logNo)}`;
-  const response = await fetch(postUrl, {
-    signal: AbortSignal.timeout(5500),
-    headers: { 'User-Agent': 'Mozilla/5.0 DEXOR exposure analysis bot' },
-  });
-  if (!response.ok) throw new Error(`네이버 포스트 접근 실패 (${response.status})`);
-  const html = await response.text();
+  const encodedBlogId = encodeURIComponent(blogId);
+  const encodedLogNo = encodeURIComponent(logNo);
+  const postUrls = [
+    `https://blog.naver.com/PostView.naver?blogId=${encodedBlogId}&logNo=${encodedLogNo}`,
+    `https://m.blog.naver.com/PostView.naver?blogId=${encodedBlogId}&logNo=${encodedLogNo}`,
+    `https://blog.naver.com/${encodedBlogId}/${encodedLogNo}`,
+  ];
+  let html = '';
+  let lastError = null;
+  for (const postUrl of postUrls) {
+    try {
+      const response = await fetch(postUrl, {
+        signal: AbortSignal.timeout(7000),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        },
+      });
+      if (!response.ok) throw new Error(`네이버 포스트 접근 실패 (${response.status})`);
+      const nextHtml = await response.text();
+      if (nextHtml && nextHtml.length > html.length) html = nextHtml;
+      if (nextHtml.includes('se-main-container') || extractMetaContent(nextHtml, 'og:title')) break;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  if (!html) throw lastError || new Error('개별 포스트 본문을 읽지 못했습니다.');
   const title = extractMetaContent(html, 'og:title') || stripHtml(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '');
   const description = extractMetaContent(html, 'og:description');
   const body = extractReadablePostText(html);
