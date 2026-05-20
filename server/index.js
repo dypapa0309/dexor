@@ -46,6 +46,16 @@ const INDUSTRY_LABELS = {
   fashion: '패션',
   pet: '반려동물',
 };
+const INDUSTRY_ALIASES = {
+  food: ['맛집', '음식', '식당', '카페', '푸드', '요리', '디저트'],
+  beauty: ['뷰티', '미용', '피부', '화장품', '헤어', '네일', '에스테틱'],
+  travel: ['여행', '숙소', '호텔', '관광', '캠핑', '나들이'],
+  living: ['생활', '리빙', '인테리어', '살림', '가구', '주방'],
+  parenting: ['육아', '아이', '아기', '키즈', '맘', '엄마', '교육'],
+  it: ['IT', '앱', '서비스', '기기', '모바일', '노트북', '테크'],
+  fashion: ['패션', '의류', '옷', '신발', '가방', '스타일'],
+  pet: ['반려동물', '강아지', '고양이', '펫'],
+};
 const KEYWORD_STOPWORDS = new Set([
   '그리고', '하지만', '있는', '없는', '해서', '하는', '하면', '이번', '오늘', '내일', '정말', '너무', '같은',
   '블로그', '네이버', '후기', '리뷰', '추천', '방문', '사용', '직접', '콘텐츠', '포스팅', '좋은', '많이',
@@ -418,6 +428,79 @@ function mergeMaps(...maps) {
   return Object.assign({}, ...maps.filter(Boolean));
 }
 
+function normalizeHeader(value = '') {
+  return String(value).replace(/^\uFEFF/, '').replace(/[\s_-]+/g, '').toLowerCase();
+}
+
+function inferIndustry(value = '') {
+  const text = String(value || '').trim();
+  if (!text || /미입력|없음|unknown|n\/a/i.test(text)) return null;
+  const compact = text.replace(/\s+/g, '').toLowerCase();
+  return Object.entries(INDUSTRY_ALIASES).find(([, aliases]) => (
+    aliases.some((alias) => compact.includes(String(alias).replace(/\s+/g, '').toLowerCase()))
+  ))?.[0] || null;
+}
+
+function findHeaderRow(rows) {
+  return rows.findIndex((row) => row.some((cell) => {
+    const header = normalizeHeader(cell);
+    return header.includes('url') || header.includes('카테고리') || header.includes('업종');
+  }));
+}
+
+function extractCategoryOverridesFromRows(rows) {
+  const map = {};
+  const headerRowIndex = findHeaderRow(rows);
+  const headers = headerRowIndex >= 0 ? rows[headerRowIndex].map(normalizeHeader) : [];
+  const categoryColumns = headers
+    .map((header, index) => ({ header, index }))
+    .filter(({ header }) => (
+      header.includes('targetcategory')
+      || header.includes('candidatecategory')
+      || header.includes('후보카테고리')
+      || header.includes('카테고리')
+      || header.includes('업종')
+      || header.includes('분야')
+    ))
+    .map(({ index }) => index);
+
+  rows.slice(headerRowIndex >= 0 ? headerRowIndex + 1 : 0).forEach((row) => {
+    const normalizedUrls = row.flatMap((cell) => extractUrlsFromText(cell));
+    if (normalizedUrls.length === 0) return;
+
+    const categoryValues = categoryColumns.length
+      ? categoryColumns.map((index) => row[index])
+      : row;
+    const industry = categoryValues.map(inferIndustry).find(Boolean);
+    if (!industry) return;
+
+    normalizedUrls.forEach((url) => {
+      map[url] = industry;
+      const blogId = getBlogId(url);
+      if (blogId) map[blogId] = industry;
+    });
+  });
+  return map;
+}
+
+function normalizeCategoryOverrides(input = {}) {
+  if (!input || typeof input !== 'object') return {};
+  const map = {};
+  Object.entries(input).forEach(([key, value]) => {
+    const industry = INDUSTRY_LABELS[value] ? value : inferIndustry(value);
+    if (!industry) return;
+    const normalizedUrl = normalizeBlogUrl(key);
+    if (normalizedUrl) {
+      map[normalizedUrl] = industry;
+      const blogId = getBlogId(normalizedUrl);
+      if (blogId) map[blogId] = industry;
+    } else {
+      map[String(key).trim()] = industry;
+    }
+  });
+  return map;
+}
+
 function extractRowsFromWorkbook(buffer) {
   const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false });
   return workbook.SheetNames.flatMap((sheetName) => {
@@ -450,6 +533,7 @@ async function extractUploadSignals(file) {
   return {
     urls: [...new Set(rows.flatMap((row) => extractUrlsFromText(row.join(' '))))],
     dailyVisitors: extractDailyVisitorsFromRows(rows),
+    categoryOverrides: extractCategoryOverridesFromRows(rows),
   };
 }
 
@@ -1080,6 +1164,7 @@ function createJob(userId, urls, mode = 'quick', campaignInput = {}) {
     mode,
     campaign: normalizeCampaign(campaignInput),
     dailyVisitorOverrides: normalizeDailyVisitorOverrides(campaignInput.dailyVisitorOverrides),
+    categoryOverrides: normalizeCategoryOverrides(campaignInput.categoryOverrides),
   });
   drainQueue();
   return getJob(jobId, userId);
@@ -1112,8 +1197,12 @@ async function processTask(task) {
   for (const url of task.urls) {
     await new Promise((resolve) => setTimeout(resolve, 120));
     try {
+      const urlCategoryOverride = task.categoryOverrides[normalizeBlogUrl(url)] || task.categoryOverrides[getBlogId(url)];
+      const campaign = urlCategoryOverride
+        ? normalizeCampaign({ ...task.campaign, industry: urlCategoryOverride })
+        : task.campaign;
       const result = await analyzeExposurePotential(url, task.mode, {
-        ...task.campaign,
+        ...campaign,
         dailyVisitorOverrides: task.dailyVisitorOverrides,
       });
       db.prepare(`
@@ -1402,12 +1491,13 @@ app.post('/api/analyze/bulk', requireAuth, handleUpload, async (req, res) => {
   try {
     const pastedUrls = extractUrlsFromText(req.body.urls || '');
     const pastedDailyVisitors = extractDailyVisitorsFromRows(extractRowsFromText(req.body.urls || ''));
-    const uploadSignals = req.file ? await extractUploadSignals(req.file) : { urls: [], dailyVisitors: {} };
+    const uploadSignals = req.file ? await extractUploadSignals(req.file) : { urls: [], dailyVisitors: {}, categoryOverrides: {} };
     const urls = [...new Set([...pastedUrls, ...uploadSignals.urls])];
     if (urls.length === 0) return res.status(400).json({ message: '분석할 네이버 블로그 URL을 찾지 못했습니다.' });
     res.status(202).json(createJob(req.user.id, urls, 'quick', {
       ...req.body,
       dailyVisitorOverrides: mergeMaps(pastedDailyVisitors, uploadSignals.dailyVisitors),
+      categoryOverrides: uploadSignals.categoryOverrides,
     }));
   } catch (error) {
     res.status(error.status || 500).json(error.payload || { message: error.message });
