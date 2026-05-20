@@ -46,6 +46,15 @@ const INDUSTRY_LABELS = {
   fashion: '패션',
   pet: '반려동물',
 };
+const KEYWORD_STOPWORDS = new Set([
+  '그리고', '하지만', '있는', '없는', '해서', '하는', '하면', '이번', '오늘', '내일', '정말', '너무', '같은',
+  '블로그', '네이버', '후기', '리뷰', '추천', '방문', '사용', '직접', '콘텐츠', '포스팅', '좋은', '많이',
+]);
+const DAILY_VISITOR_MINIMUMS = {
+  s: 500,
+  a: 200,
+  b: 80,
+};
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const appRoot = join(__dirname, '..');
@@ -347,6 +356,68 @@ function extractUrlsFromText(text = '') {
   return [...new Set(matches.map(normalizeBlogUrl).filter(Boolean))];
 }
 
+function parseDailyVisitorValue(value) {
+  const text = String(value ?? '').replace(/[,명\s]/g, '');
+  const match = text.match(/\d+/);
+  if (!match) return null;
+  const number = Number.parseInt(match[0], 10);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function mergeDailyVisitor(map, url, value) {
+  const normalizedUrl = normalizeBlogUrl(url);
+  const dailyVisitors = parseDailyVisitorValue(value);
+  if (!normalizedUrl || !dailyVisitors) return;
+  map[normalizedUrl] = dailyVisitors;
+  const blogId = getBlogId(normalizedUrl);
+  if (blogId) map[blogId] = dailyVisitors;
+}
+
+function extractRowsFromText(text = '') {
+  return String(text)
+    .split(/\r?\n/)
+    .map((line) => {
+      if (line.includes('\t')) return line.split('\t').map((cell) => cell.trim());
+      const cells = [];
+      let current = '';
+      let quoted = false;
+      for (let index = 0; index < line.length; index += 1) {
+        const char = line[index];
+        if (char === '"') {
+          quoted = !quoted;
+        } else if (char === ',' && !quoted && !(/\d/.test(line[index - 1] || '') && /\d/.test(line[index + 1] || ''))) {
+          cells.push(current.trim());
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      cells.push(current.trim());
+      return cells;
+    })
+    .filter((row) => row.some(Boolean));
+}
+
+function extractDailyVisitorsFromRows(rows) {
+  const map = {};
+  let visitorColumn = -1;
+  rows.forEach((row) => {
+    const nextVisitorColumn = row.findIndex((cell) => /일\s*방문|방문자|visitor|daily/i.test(cell));
+    if (nextVisitorColumn >= 0) visitorColumn = nextVisitorColumn;
+    const urlCellIndex = row.findIndex((cell) => normalizeBlogUrl(cell));
+    if (urlCellIndex < 0) return;
+    const valueCell = visitorColumn >= 0 && visitorColumn !== urlCellIndex
+      ? row[visitorColumn]
+      : row.find((cell, index) => index !== urlCellIndex && parseDailyVisitorValue(cell));
+    mergeDailyVisitor(map, row[urlCellIndex], valueCell);
+  });
+  return map;
+}
+
+function mergeMaps(...maps) {
+  return Object.assign({}, ...maps.filter(Boolean));
+}
+
 async function extractUrlsFromWorkbook(buffer) {
   const zip = await JSZip.loadAsync(buffer);
   const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '' });
@@ -371,12 +442,49 @@ async function extractUrlsFromWorkbook(buffer) {
   return [...new Set(found)];
 }
 
+async function extractRowsFromWorkbook(buffer) {
+  const zip = await JSZip.loadAsync(buffer);
+  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '' });
+  const rows = [];
+  const sharedXml = await zip.file('xl/sharedStrings.xml')?.async('text');
+  const sharedStrings = [];
+  if (sharedXml) {
+    const shared = parser.parse(sharedXml);
+    asArray(shared?.sst?.si).forEach((entry) => sharedStrings.push(readRichText(entry)));
+  }
+  const sheetFiles = Object.keys(zip.files).filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/.test(name));
+  for (const sheetFile of sheetFiles) {
+    const xml = await zip.file(sheetFile).async('text');
+    const sheet = parser.parse(xml);
+    asArray(sheet?.worksheet?.sheetData?.row).forEach((row) => {
+      const cells = asArray(row.c).map((cell) => {
+        const value = cell.t === 's' ? sharedStrings[Number(cell.v)] : readRichText(cell.is) || cell.v;
+        return String(value ?? '').trim();
+      });
+      if (cells.some(Boolean)) rows.push(cells);
+    });
+  }
+  return rows;
+}
+
 async function extractUrlsFromUpload(file) {
   const name = file.originalname || '';
   if (/\.csv$/i.test(name) || file.mimetype === 'text/csv') {
     return extractUrlsFromText(file.buffer.toString('utf8'));
   }
   return extractUrlsFromWorkbook(file.buffer);
+}
+
+async function extractUploadSignals(file) {
+  if (!file) return { urls: [], dailyVisitors: {} };
+  const name = file.originalname || '';
+  const rows = /\.csv$/i.test(name) || file.mimetype === 'text/csv'
+    ? extractRowsFromText(file.buffer.toString('utf8'))
+    : await extractRowsFromWorkbook(file.buffer);
+  return {
+    urls: [...new Set(rows.flatMap((row) => extractUrlsFromText(row.join(' '))))],
+    dailyVisitors: extractDailyVisitorsFromRows(rows),
+  };
 }
 
 function asArray(value) {
@@ -425,6 +533,24 @@ function normalizeCampaign(input = {}) {
   return { industry, industryLabel: INDUSTRY_LABELS[industry], keyword };
 }
 
+function normalizeDailyVisitorOverrides(input = {}) {
+  if (!input || typeof input !== 'object') return {};
+  const map = {};
+  Object.entries(input).forEach(([key, value]) => {
+    const dailyVisitors = parseDailyVisitorValue(value);
+    if (!dailyVisitors) return;
+    const normalizedUrl = normalizeBlogUrl(key);
+    if (normalizedUrl) {
+      map[normalizedUrl] = dailyVisitors;
+      const blogId = getBlogId(normalizedUrl);
+      if (blogId) map[blogId] = dailyVisitors;
+    } else {
+      map[String(key).trim()] = dailyVisitors;
+    }
+  });
+  return map;
+}
+
 function clamp(value, min = 0, max = 100) {
   return Math.max(min, Math.min(max, value));
 }
@@ -432,6 +558,57 @@ function clamp(value, min = 0, max = 100) {
 function weightedTopicScore(text, words) {
   const source = String(text || '').toLowerCase();
   return words.reduce((sum, word) => sum + (source.includes(String(word).toLowerCase()) ? 1 : 0), 0);
+}
+
+function textIncludesAnyTerm(text, terms) {
+  const source = String(text || '').toLowerCase();
+  return terms.some((term) => {
+    const value = String(term || '').trim().toLowerCase();
+    return value.length >= 2 && source.includes(value);
+  });
+}
+
+function keywordSearchTerms(campaign) {
+  const keyword = String(campaign.keyword || '').trim();
+  const keywordParts = keyword.split(/[\s,/·|]+/).filter((word) => word.length >= 2);
+  return [...new Set([keyword, ...keywordParts].filter((word) => String(word).trim().length >= 2))];
+}
+
+function extractCandidateKeywords(posts, campaign, limit = 2) {
+  const campaignTerms = new Set(keywordTerms(campaign).map((word) => String(word).toLowerCase()));
+  const counts = new Map();
+  posts.forEach((post, index) => {
+    const weight = Math.max(1, 6 - index);
+    const tokens = String(`${post.title || ''} ${post.description || ''}`)
+      .match(/[가-힣A-Za-z0-9]{2,}/g) || [];
+    tokens.forEach((token) => {
+      const normalized = token.toLowerCase();
+      if (KEYWORD_STOPWORDS.has(normalized) || campaignTerms.has(normalized)) return;
+      if (/^\d+$/.test(normalized)) return;
+      counts.set(normalized, (counts.get(normalized) || 0) + weight);
+    });
+  });
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], 'ko'))
+    .slice(0, limit)
+    .map(([keyword, weight]) => ({ keyword, weight }));
+}
+
+function estimateDailyVisitorSignal(posts, seed) {
+  if (!posts.length) return null;
+  const engagementAverage = posts.reduce((sum, post) => sum + post.comments * 3 + post.likes, 0) / posts.length;
+  const recencyBoost = posts.filter((post) => post.daysAgo <= 7).length * 25;
+  const estimatedAverage = Math.round(clamp(engagementAverage * 8 + recencyBoost + (seed % 90), 20, 900));
+  const estimatedMin = Math.max(10, Math.round(estimatedAverage * 0.55));
+  const estimatedMax = Math.round(estimatedAverage * 1.45);
+  return {
+    status: 'estimated',
+    label: '공개 반응 기반 추정',
+    estimatedAverage,
+    estimatedMin,
+    estimatedMax,
+    minimums: DAILY_VISITOR_MINIMUMS,
+  };
 }
 
 function htmlDecode(input = '') {
@@ -661,7 +838,8 @@ async function collectPublicBlogSignals(url, mode, campaign) {
   const industryWords = INDUSTRY_KEYWORDS[campaign.industry] || [];
   const posts = rawItems.map((item, index) => {
     const title = stripHtml(item.title);
-    const body = `${title} ${stripHtml(item.description)}`;
+    const description = stripHtml(item.description);
+    const body = `${title} ${description}`;
     const pubDate = item.pubDate ? new Date(item.pubDate) : null;
     const daysAgo = pubDate && !Number.isNaN(pubDate.getTime())
       ? Math.max(0, Math.floor((Date.now() - pubDate.getTime()) / (1000 * 60 * 60 * 24)))
@@ -669,6 +847,7 @@ async function collectPublicBlogSignals(url, mode, campaign) {
     const adSignals = ['제공', '협찬', '광고', '체험단', '원고료', '소정의'].filter((word) => body.includes(word));
     return {
       title: title || `${campaign.keyword} 공개 글 ${index + 1}`,
+      description,
       daysAgo,
       topicHits: weightedTopicScore(body, [...industryWords, campaign.keyword]),
       hasExperience: ['방문', '사용', '먹어', '다녀', '직접', '후기', '느꼈'].some((word) => body.includes(word)),
@@ -680,13 +859,36 @@ async function collectPublicBlogSignals(url, mode, campaign) {
   return {
     sourceStatus: 'public-rss',
     subscriberSignal: 30 + (seed % 65),
+    dailyVisitorSignal: estimateDailyVisitorSignal(posts, seed),
     topCompetitorStrength: 42 + (hash(`${campaign.keyword}:competition`) % 49),
     posts,
   }
 }
 
+function dailyVisitorOverrideFor(url, overrides = {}) {
+  const normalizedUrl = normalizeBlogUrl(url);
+  const blogId = getBlogId(url);
+  return parseDailyVisitorValue(overrides[normalizedUrl])
+    || parseDailyVisitorValue(overrides[blogId])
+    || null;
+}
+
+function measuredDailyVisitorSignal(value) {
+  const dailyVisitors = parseDailyVisitorValue(value);
+  if (!dailyVisitors) return null;
+  return {
+    status: 'measured',
+    label: '업로드 리스트 실측',
+    estimatedAverage: dailyVisitors,
+    estimatedMin: dailyVisitors,
+    estimatedMax: dailyVisitors,
+    minimums: DAILY_VISITOR_MINIMUMS,
+  };
+}
+
 async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {}) {
   const campaign = normalizeCampaign(campaignInput);
+  const visitorOverride = dailyVisitorOverrideFor(url, campaignInput.dailyVisitorOverrides);
   const seed = hash(`${url}:${mode}:${campaign.industry}:${campaign.keyword}`);
   const [rssSignals, postSignals] = await Promise.all([
     collectPublicBlogSignals(url, mode, campaign).catch(() => null),
@@ -696,6 +898,7 @@ async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {})
   const signals = rssSignals || {
     sourceStatus: 'post-only',
     subscriberSignal: 35 + (seed % 35),
+    dailyVisitorSignal: null,
     topCompetitorStrength: 42 + (hash(`${campaign.keyword}:competition`) % 49),
     posts: [{
       title: postSignals.title,
@@ -707,11 +910,46 @@ async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {})
       likes: 5 + (seed % 18),
     }],
   };
+  const dailyVisitorSignal = measuredDailyVisitorSignal(visitorOverride) || signals.dailyVisitorSignal;
   const latestPostDays = Math.min(...signals.posts.map((post) => post.daysAgo));
   const recentPostCount = signals.posts.filter((post) => post.daysAgo <= 30).length;
   const adPostCount = signals.posts.filter((post) => post.adSignals.some((signal) => ['제공', '협찬', '광고'].includes(signal))).length;
   const adRatio = Math.round((adPostCount / signals.posts.length) * 100);
   const industryWords = keywordTerms(campaign);
+  const recentTenPosts = signals.posts.slice(0, 10);
+  const recentFivePosts = signals.posts.slice(0, 5);
+  const searchTerms = keywordSearchTerms(campaign);
+  const recentFiveKeywordHitPosts = recentFivePosts
+    .map((post, index) => ({
+      index: index + 1,
+      title: post.title,
+      matched: textIncludesAnyTerm(`${post.title || ''} ${post.description || ''}`, searchTerms),
+    }))
+    .filter((post) => post.matched);
+  const recentKeywordHitPosts = recentTenPosts
+    .map((post, index) => ({
+      index: index + 1,
+      title: post.title,
+      matched: textIncludesAnyTerm(`${post.title || ''} ${post.description || ''}`, searchTerms),
+    }))
+    .filter((post) => post.matched);
+  const recentKeywordCoverage = signals.posts.length
+    ? Math.round((recentKeywordHitPosts.length / Math.min(10, signals.posts.length)) * 100)
+    : 0;
+  const recentKeywordCheck = {
+    status: recentKeywordHitPosts.length > 0 ? 'passed' : 'failed',
+    label: recentKeywordHitPosts.length > 0 ? '최근 10개 내 키워드 콘텐츠 확인' : '최근 10개 내 키워드 콘텐츠 없음',
+    coverage: recentKeywordCoverage,
+    matchedCount: recentKeywordHitPosts.length,
+    recentFiveMatchedCount: recentFiveKeywordHitPosts.length,
+    checkedCount: Math.min(10, signals.posts.length),
+    recentFiveCheckedCount: Math.min(5, signals.posts.length),
+    terms: searchTerms,
+    matchedTitles: recentKeywordHitPosts.slice(0, 3).map((post) => post.title),
+    recentFiveMatchedTitles: recentFiveKeywordHitPosts.slice(0, 3).map((post) => post.title),
+  };
+  const derivedKeywords = extractCandidateKeywords(recentFivePosts, campaign, 2);
+  const derivedKeywordBonus = Math.min(8, derivedKeywords.reduce((sum, item) => sum + item.weight, 0) / 4);
   const topicHits = signals.posts.reduce((sum, post) => sum + post.topicHits + weightedTopicScore(post.title, industryWords), 0);
   const maxTopicHits = signals.posts.length * 5;
   const topicFit = Math.round(clamp((topicHits / maxTopicHits) * 100));
@@ -724,6 +962,7 @@ async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {})
   const diaFit = Math.round(clamp(experienceFit * 0.36 + topicFit * 0.28 + (100 - adRatio) * 0.16 + activityFit * 0.12 + competitorSimilarity * 0.08));
   const riskFlags = [];
   let riskPenalty = 0;
+  let gradeCap = null;
 
   if (signals.sourceStatus === 'limited') {
     riskFlags.push('공개 데이터 접근 제한');
@@ -741,6 +980,35 @@ async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {})
     riskFlags.push(postSignals ? '블로그 최근 주제 흐름 약함' : '캠페인 주제 적합도 낮음');
     riskPenalty += postSignals ? 8 : 18;
   }
+  if (recentKeywordCheck.status === 'failed') {
+    riskFlags.push('최근 10개 내 키워드 콘텐츠 없음');
+    riskPenalty += 18;
+    gradeCap = minGrade(gradeCap, 'B');
+  } else if (recentKeywordCheck.recentFiveMatchedCount === 0) {
+    riskFlags.push('최근 5개 내 세부키워드 노출 없음');
+    riskPenalty += 14;
+    gradeCap = minGrade(gradeCap, 'A');
+  } else if (recentKeywordCheck.matchedCount === 1 && signals.posts.length >= 8) {
+    riskFlags.push('최근 키워드 콘텐츠 빈도 낮음');
+    riskPenalty += 6;
+  }
+  if (!dailyVisitorSignal) {
+    riskFlags.push('일방문자수 실측 미확인');
+    riskPenalty += 3;
+    gradeCap = minGrade(gradeCap, 'A');
+  } else if ((dailyVisitorSignal.estimatedAverage || 0) < DAILY_VISITOR_MINIMUMS.b) {
+    riskFlags.push('일방문자수 기준 미달');
+    riskPenalty += 16;
+    gradeCap = minGrade(gradeCap, 'B');
+  } else if ((dailyVisitorSignal.estimatedAverage || 0) < DAILY_VISITOR_MINIMUMS.a) {
+    riskFlags.push('일방문자수 낮음');
+    riskPenalty += 10;
+    gradeCap = minGrade(gradeCap, 'B');
+  } else if ((dailyVisitorSignal.estimatedAverage || 0) < DAILY_VISITOR_MINIMUMS.s) {
+    riskFlags.push('S랭크 방문자 기준 미달');
+    riskPenalty += 5;
+    gradeCap = minGrade(gradeCap, 'A');
+  }
   if (postSignals && postSignals.topicFit < 45) {
     riskFlags.push('개별 포스트 주제 적합도 낮음');
     riskPenalty += 12;
@@ -752,12 +1020,12 @@ async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {})
 
   const rssScore = cRankFit * 0.36 + diaFit * 0.34 + competitorSimilarity * 0.2 + (100 - keywordCompetition) * 0.1;
   const exposureScore = postSignals
-    ? Math.round(clamp(postSignals.postFit * 0.62 + cRankFit * 0.14 + diaFit * 0.12 + competitorSimilarity * 0.07 + activityFit * 0.05 - riskPenalty * 0.35))
-    : Math.round(clamp(rssScore - riskPenalty));
-  const grade = gradeFromScore(exposureScore);
-  const recommendation = exposureScore >= 75
+    ? Math.round(clamp(postSignals.postFit * 0.6 + cRankFit * 0.14 + diaFit * 0.12 + competitorSimilarity * 0.07 + activityFit * 0.04 + recentKeywordCoverage * 0.03 + derivedKeywordBonus - riskPenalty * 0.35))
+    : Math.round(clamp(rssScore + recentKeywordCoverage * 0.05 + derivedKeywordBonus - riskPenalty));
+  const grade = minGrade(gradeFromScore(exposureScore), gradeCap);
+  const recommendation = ['S', 'A'].includes(grade)
     ? '체험 후기형 원고'
-    : exposureScore >= 60
+    : grade === 'B'
       ? '롱테일 키워드 후기'
       : '브랜드 인지도 보조 캠페인';
   const reasons = [
@@ -765,6 +1033,10 @@ async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {})
       ? `입력된 개별 포스트 "${postSignals.title || postSignals.logNo}" 본문을 직접 읽어 포스트 적합도 ${postSignals.postFit}점을 반영했습니다.`
       : `${campaign.industryLabel}·${campaign.keyword} 맥락에서 최근 ${recentPostCount}개 글이 공개 신호로 확인되어 노출 가능성을 추정했습니다.`,
     `블로그 최근 글 기준 주제 적합도 ${topicFit}점, 문서 적합도 ${diaFit}점으로 블로그 전체 흐름을 보조 반영했습니다.`,
+    `${recentKeywordCheck.label}: 최근 ${recentKeywordCheck.checkedCount}개 중 ${recentKeywordCheck.matchedCount}개, 최근 5개 중 ${recentKeywordCheck.recentFiveMatchedCount}개가 "${campaign.keyword}" 관련 표현을 포함했습니다.`,
+    derivedKeywords.length
+      ? `최근 5개 글에서 보조 검토 키워드로 ${derivedKeywords.map((item) => item.keyword).join(', ')}를 추렸습니다.`
+      : '최근 5개 글에서 뚜렷한 보조 검토 키워드는 추출되지 않았습니다.',
     keywordCompetition >= 75
       ? `입력 키워드의 경쟁 강도가 ${keywordCompetition}점으로 높아 상위 노출은 보수적으로 봐야 합니다.`
       : `입력 키워드 경쟁 강도가 ${keywordCompetition}점으로 과열 구간은 아닙니다.`,
@@ -802,6 +1074,9 @@ async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {})
       campaign,
       recentPostCount,
       latestPostDays,
+      recentKeywordCheck,
+      derivedKeywords,
+      dailyVisitorSignal,
       sourceStatus: postSignals && rssSignals ? 'post-view+public-rss' : postSignals ? 'post-only' : signals.sourceStatus,
       recommendation,
       cautionReasons,
@@ -838,7 +1113,14 @@ function createJob(userId, urls, mode = 'quick', campaignInput = {}) {
     INSERT INTO analysis_jobs (id, user_id, mode, status, total, completed, failed, credit_cost, created_at)
     VALUES (?, ?, ?, 'pending', ?, 0, 0, ?, ?)
   `).run(jobId, userId, mode, uniqueUrls.length, creditCost, timestamp);
-  queue.push({ jobId, userId, urls: uniqueUrls, mode, campaign: normalizeCampaign(campaignInput) });
+  queue.push({
+    jobId,
+    userId,
+    urls: uniqueUrls,
+    mode,
+    campaign: normalizeCampaign(campaignInput),
+    dailyVisitorOverrides: normalizeDailyVisitorOverrides(campaignInput.dailyVisitorOverrides),
+  });
   drainQueue();
   return getJob(jobId, userId);
 }
@@ -870,7 +1152,10 @@ async function processTask(task) {
   for (const url of task.urls) {
     await new Promise((resolve) => setTimeout(resolve, 120));
     try {
-      const result = await analyzeExposurePotential(url, task.mode, task.campaign);
+      const result = await analyzeExposurePotential(url, task.mode, {
+        ...task.campaign,
+        dailyVisitorOverrides: task.dailyVisitorOverrides,
+      });
       db.prepare(`
         INSERT INTO blog_results (
           id, job_id, user_id, url, mode, score, grade, decision, ad_ratio,
@@ -941,6 +1226,9 @@ function mapResult(row) {
     campaign: breakdown.campaign ?? null,
     recentPostCount: breakdown.recentPostCount ?? null,
     latestPostDays: breakdown.latestPostDays ?? null,
+    recentKeywordCheck: breakdown.recentKeywordCheck ?? null,
+    derivedKeywords: breakdown.derivedKeywords ?? [],
+    dailyVisitorSignal: breakdown.dailyVisitorSignal ?? null,
     sourceStatus: breakdown.sourceStatus ?? 'public',
     recommendation: breakdown.recommendation ?? null,
     cautionReasons: breakdown.cautionReasons ?? [],
@@ -1153,10 +1441,14 @@ app.post('/api/analyze/single', requireAuth, (req, res) => {
 app.post('/api/analyze/bulk', requireAuth, handleUpload, async (req, res) => {
   try {
     const pastedUrls = extractUrlsFromText(req.body.urls || '');
-    const fileUrls = req.file ? await extractUrlsFromUpload(req.file) : [];
-    const urls = [...new Set([...pastedUrls, ...fileUrls])];
+    const pastedDailyVisitors = extractDailyVisitorsFromRows(extractRowsFromText(req.body.urls || ''));
+    const uploadSignals = req.file ? await extractUploadSignals(req.file) : { urls: [], dailyVisitors: {} };
+    const urls = [...new Set([...pastedUrls, ...uploadSignals.urls])];
     if (urls.length === 0) return res.status(400).json({ message: '분석할 네이버 블로그 URL을 찾지 못했습니다.' });
-    res.status(202).json(createJob(req.user.id, urls, 'quick', req.body));
+    res.status(202).json(createJob(req.user.id, urls, 'quick', {
+      ...req.body,
+      dailyVisitorOverrides: mergeMaps(pastedDailyVisitors, uploadSignals.dailyVisitors),
+    }));
   } catch (error) {
     res.status(error.status || 500).json(error.payload || { message: error.message });
   }
@@ -1177,11 +1469,15 @@ app.post('/api/analyze/test-strengthened', requireAuth, async (req, res) => {
     const urls = Array.isArray(req.body.urls) ? req.body.urls : extractUrlsFromText(req.body.urls || '');
     const uniqueUrls = [...new Set(urls.map(normalizeBlogUrl).filter(Boolean))].slice(0, 20);
     const legacyIndexes = req.body.legacyIndexes && typeof req.body.legacyIndexes === 'object' ? req.body.legacyIndexes : {};
+    const dailyVisitorOverrides = mergeMaps(
+      normalizeDailyVisitorOverrides(req.body.dailyVisitorOverrides),
+      extractDailyVisitorsFromRows(extractRowsFromText(req.body.urls || '')),
+    );
     if (uniqueUrls.length === 0) return res.status(400).json({ message: '테스트할 네이버 블로그 URL을 찾지 못했습니다.' });
 
     const results = [];
     for (const url of uniqueUrls) {
-      const result = await analyzeExposurePotential(url, 'quick', req.body);
+      const result = await analyzeExposurePotential(url, 'quick', { ...req.body, dailyVisitorOverrides });
       results.push(strengthenEvaluation(result, legacyIndexes[url] || legacyIndexes[getBlogId(url)] || ''));
     }
     res.json({ results });
@@ -1221,6 +1517,10 @@ app.get('/api/export', requireAuth, (req, res) => {
     'KeywordCompetition',
     'RecentActivity',
     'RecentPostCount',
+    'Recent5KeywordHits',
+    'Recent10KeywordHits',
+    'DerivedKeywords',
+    'DailyVisitorSignal',
     'Recommendation',
     'Reasons',
     'Cautions',
@@ -1238,6 +1538,16 @@ app.get('/api/export', requireAuth, (req, res) => {
     item.keywordCompetition ?? '',
     item.recentActivity,
     item.recentPostCount ?? '',
+    item.recentKeywordCheck
+      ? `${item.recentKeywordCheck.recentFiveMatchedCount}/${item.recentKeywordCheck.recentFiveCheckedCount}`
+      : '',
+    item.recentKeywordCheck
+      ? `${item.recentKeywordCheck.matchedCount}/${item.recentKeywordCheck.checkedCount}`
+      : '',
+    item.derivedKeywords.map((keyword) => keyword.keyword).join(' / '),
+    item.dailyVisitorSignal
+      ? `${item.dailyVisitorSignal.label} avg ${item.dailyVisitorSignal.estimatedAverage} (${item.dailyVisitorSignal.estimatedMin}-${item.dailyVisitorSignal.estimatedMax})`
+      : '미확인',
     item.recommendation || '',
     item.reasons.join(' / '),
     item.cautionReasons.join(' / '),

@@ -196,7 +196,8 @@ function App() {
   }
 
   async function startDeep() {
-    const urls = filteredResults.filter((item) => ['S', 'A', 'B'].includes(item.grade)).map((item) => item.url);
+    const selectedRows = filteredResults.filter((item) => ['S', 'A', 'B'].includes(item.grade));
+    const urls = selectedRows.map((item) => item.url);
     if (urls.length === 0) {
       setError('정밀 분석할 S/A/B 등급 블로그가 없습니다.');
       return;
@@ -207,7 +208,16 @@ function App() {
       const nextJob = await apiJson(`${API_BASE}/analyze/deep`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ urls, industry, keyword }),
+        body: JSON.stringify({
+          urls,
+          industry,
+          keyword,
+          dailyVisitorOverrides: Object.fromEntries(
+            selectedRows
+              .filter((item) => item.dailyVisitorSignal?.status === 'measured')
+              .map((item) => [item.url, item.dailyVisitorSignal.estimatedAverage]),
+          ),
+        }),
       });
       setResults([]);
       setJob(nextJob);
@@ -375,10 +385,10 @@ function App() {
               <label>핵심 키워드</label>
               <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="예: 강남 맛집, 홍대 네일, 제주 숙소" />
               <label>블로그 URL</label>
-              <textarea value={bulkText} onChange={(event) => setBulkText(event.target.value)} placeholder="네이버 블로그 URL을 하나 이상 붙여넣으세요." />
+              <textarea value={bulkText} onChange={(event) => setBulkText(event.target.value)} placeholder="네이버 블로그 URL을 하나 이상 붙여넣으세요. URL 옆에 일방문자수를 함께 넣으면 랭크 기준에 반영됩니다." />
               <label className="file-drop">
                 <FileSpreadsheet size={22} />
-                <span>{file ? file.name : '엑셀 업로드'}</span>
+                <span>{file ? file.name : '엑셀 업로드 · URL/일방문자수 컬럼 지원'}</span>
                 <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => setFile(event.target.files?.[0] || null)} />
               </label>
               <p className="cost">빠른 분석: URL당 1크레딧 · 예상 차감 {estimatedQuickCost}크레딧</p>
@@ -629,7 +639,7 @@ function StrengthTestPage({
           <label>핵심 키워드</label>
           <input value={keyword} onChange={(event) => onKeyword(event.target.value)} placeholder="예: 여성 패션 코디" />
           <label>테스트 URL</label>
-          <textarea value={testUrls} onChange={(event) => onUrls(event.target.value)} placeholder="네이버 블로그 URL을 줄바꿈으로 붙여넣으세요." />
+          <textarea value={testUrls} onChange={(event) => onUrls(event.target.value)} placeholder="네이버 블로그 URL을 줄바꿈으로 붙여넣으세요. URL, 일방문자수 형식도 가능합니다." />
           <label>기존 지수 매칭</label>
           <textarea
             className="compact-textarea"
@@ -673,7 +683,17 @@ function StrengthResults({ rows }) {
           <div className="signal-grid">
             <Signal label="데이터 신뢰도" value={`${item.dataConfidence.level} ${item.dataConfidence.score}`} detail={item.dataConfidence.sourceLabel} />
             <Signal label="주제 적합도" value={item.topicFit ?? '-'} detail={`최근 글 ${item.recentPostCount ?? '-'}개`} />
+            <Signal
+              label="최근 5개 키워드"
+              value={item.recentKeywordCheck ? `${item.recentKeywordCheck.recentFiveMatchedCount}/${item.recentKeywordCheck.recentFiveCheckedCount}` : '-'}
+              detail={item.recentKeywordCheck?.label || '세부키워드 확인'}
+            />
             <Signal label="문서 적합도" value={item.diaFit ?? '-'} detail={`광고성 ${item.adRatio}%`} />
+            <Signal
+              label="일방문자수"
+              value={item.dailyVisitorSignal ? `평균 ${item.dailyVisitorSignal.estimatedAverage}` : '미확인'}
+              detail={item.dailyVisitorSignal?.label || '실측 미확인'}
+            />
             <Signal label="상위노출 검증" value={item.searchValidation.label} detail="정밀 단계에서 검증 예정" />
           </div>
           <div className="flag-row">
@@ -820,16 +840,16 @@ function AnalysisLogicModal({ onClose }) {
           </section>
           <section>
             <h3>2. 블로그 최근 흐름 보조 분석</h3>
-            <p>RSS 최근 글에서 활동성, 주제 일관성, 광고성 비율, 문서형 후기 신호를 확인합니다.</p>
+            <p>RSS 최근 글에서 활동성, 주제 일관성, 광고성 비율, 최근 5개·10개 게시물의 세부키워드 노출을 확인합니다.</p>
           </section>
           <section>
             <h3>3. 최종 점수 산식</h3>
-            <p>개별 포스트가 있으면 포스트 적합도 62%를 중심으로 C-Rank형 적합도, 문서 적합도, 상위권 유사도, 최근 활동성을 보조 반영합니다.</p>
-            <div className="formula-box">포스트 62% + C-Rank 14% + 문서 12% + 유사도 7% + 활동성 5% - 리스크 감점</div>
+            <p>개별 포스트가 있으면 포스트 적합도를 중심으로 C-Rank형 적합도, 문서 적합도, 상위권 유사도, 최근 활동성, 최근 키워드 포함률을 보조 반영합니다.</p>
+            <div className="formula-box">포스트 60% + C-Rank 14% + 문서 12% + 유사도 7% + 활동성 4% + 최근 키워드 3% - 리스크 감점</div>
           </section>
           <section>
             <h3>4. 리스크 감점</h3>
-            <p>최근 활동 약함, 대가성 콘텐츠 비중 높음, 블로그 최근 주제 흐름 약함, 개별 포스트 주제 불일치가 있으면 점수가 내려갑니다.</p>
+            <p>최근 활동 약함, 대가성 콘텐츠 비중 높음, 최근 5개 세부키워드 없음, 최근 10개 키워드 없음, 일방문자수 기준 미달이 있으면 점수와 최대 랭크가 내려갑니다.</p>
           </section>
         </div>
       </div>
@@ -867,6 +887,15 @@ function DetailModal({ result, onClose }) {
           <section>
             <h3>판단 이유</h3>
             <ul>{result.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+            {result.recentKeywordCheck && (
+              <p className="risk">
+                최근 세부키워드: 5개 중 {result.recentKeywordCheck.recentFiveMatchedCount}개,
+                10개 중 {result.recentKeywordCheck.matchedCount}개 확인
+              </p>
+            )}
+            {result.derivedKeywords?.length > 0 && (
+              <p className="risk">보조 검토 키워드: {result.derivedKeywords.map((item) => item.keyword).join(', ')}</p>
+            )}
             {result.postSignals && (
               <p className="risk">
                 개별 포스트: {result.postSignals.title || result.postSignals.logNo}
@@ -880,6 +909,11 @@ function DetailModal({ result, onClose }) {
             <h3>주의 이유</h3>
             <ul>{(result.cautionReasons || []).map((reason) => <li key={reason}>{reason}</li>)}</ul>
             {result.campaign && <p className="risk">캠페인: {result.campaign.industryLabel} · {result.campaign.keyword}</p>}
+            <p className="risk">
+              일방문자수: {result.dailyVisitorSignal
+                ? `${result.dailyVisitorSignal.label} 평균 ${result.dailyVisitorSignal.estimatedAverage}명 (${result.dailyVisitorSignal.estimatedMin}-${result.dailyVisitorSignal.estimatedMax})`
+                : '실측 미확인'}
+            </p>
           </section>
           <section>
             <h3>최근 글 미리보기</h3>
