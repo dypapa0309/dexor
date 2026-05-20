@@ -1012,56 +1012,51 @@ async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {})
 
   if (signals.sourceStatus === 'limited') {
     riskFlags.push('공개 데이터 접근 제한');
-    riskPenalty += 22;
+    riskPenalty += 18;
+    gradeCap = minGrade(gradeCap, 'B');
   }
   if (latestPostDays > 45) {
     riskFlags.push('최근 활동 약함');
-    riskPenalty += 18;
+    riskPenalty += 14;
   }
   if (adRatio >= 65) {
     riskFlags.push('대가성 콘텐츠 비중 높음');
-    riskPenalty += 14;
+    riskPenalty += 10;
   }
-  if (topicFit < 45) {
+  if (topicFit < 35) {
     riskFlags.push(postSignals ? '블로그 최근 주제 흐름 약함' : '캠페인 주제 적합도 낮음');
-    riskPenalty += postSignals ? 8 : 18;
+    riskPenalty += postSignals ? 6 : 10;
   }
   if (recentKeywordCheck.status === 'failed') {
     riskFlags.push('최근 10개 내 키워드 콘텐츠 없음');
-    riskPenalty += 18;
-    gradeCap = minGrade(gradeCap, 'B');
+    riskPenalty += 10;
   } else if (recentKeywordCheck.recentFiveMatchedCount === 0) {
     riskFlags.push('최근 5개 내 세부키워드 노출 없음');
-    riskPenalty += 14;
-    gradeCap = minGrade(gradeCap, 'A');
+    riskPenalty += 7;
   } else if (recentKeywordCheck.matchedCount === 1 && signals.posts.length >= 8) {
     riskFlags.push('최근 키워드 콘텐츠 빈도 낮음');
-    riskPenalty += 6;
+    riskPenalty += 4;
   }
   if (!dailyVisitorSignal) {
     riskFlags.push('일방문자수 실측 미확인');
-    riskPenalty += 3;
-    gradeCap = minGrade(gradeCap, 'A');
+    riskPenalty += 2;
   } else if ((dailyVisitorSignal.estimatedAverage || 0) < DAILY_VISITOR_MINIMUMS.b) {
     riskFlags.push('일방문자수 기준 미달');
-    riskPenalty += 16;
-    gradeCap = minGrade(gradeCap, 'B');
+    riskPenalty += 8;
   } else if ((dailyVisitorSignal.estimatedAverage || 0) < DAILY_VISITOR_MINIMUMS.a) {
     riskFlags.push('일방문자수 낮음');
-    riskPenalty += 10;
-    gradeCap = minGrade(gradeCap, 'B');
+    riskPenalty += 6;
   } else if ((dailyVisitorSignal.estimatedAverage || 0) < DAILY_VISITOR_MINIMUMS.s) {
     riskFlags.push('S랭크 방문자 기준 미달');
-    riskPenalty += 5;
-    gradeCap = minGrade(gradeCap, 'A');
+    riskPenalty += 3;
   }
-  if (postSignals && postSignals.topicFit < 45) {
+  if (postSignals && postSignals.topicFit < 35) {
     riskFlags.push('개별 포스트 주제 적합도 낮음');
-    riskPenalty += 12;
+    riskPenalty += 8;
   }
   if (keywordCompetition >= 82 && competitorSimilarity < 68) {
     riskFlags.push('키워드 경쟁 강도 높음');
-    riskPenalty += 10;
+    riskPenalty += 6;
   }
 
   const rssScore = cRankFit * 0.36 + diaFit * 0.34 + competitorSimilarity * 0.2 + (100 - keywordCompetition) * 0.1;
