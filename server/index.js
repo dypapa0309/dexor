@@ -573,8 +573,9 @@ function minGrade(...grades) {
 
 function normalizeCampaign(input = {}) {
   const industry = INDUSTRY_LABELS[input.industry] ? input.industry : 'food';
-  const keyword = String(input.keyword || INDUSTRY_LABELS[industry]).trim().slice(0, 40) || INDUSTRY_LABELS[industry];
-  return { industry, industryLabel: INDUSTRY_LABELS[industry], keyword };
+  const rawKeyword = String(input.keyword || '').trim();
+  const keyword = (rawKeyword || INDUSTRY_LABELS[industry]).slice(0, 40) || INDUSTRY_LABELS[industry];
+  return { industry, industryLabel: INDUSTRY_LABELS[industry], keyword, keywordProvided: rawKeyword.length > 0 };
 }
 
 function normalizeDailyVisitorOverrides(input = {}) {
@@ -615,7 +616,9 @@ function textIncludesAnyTerm(text, terms) {
 function keywordSearchTerms(campaign) {
   const keyword = String(campaign.keyword || '').trim();
   const keywordParts = keyword.split(/[\s,/·|]+/).filter((word) => word.length >= 2);
-  return [...new Set([keyword, ...keywordParts].filter((word) => String(word).trim().length >= 2))];
+  const defaultIndustryKeyword = !campaign.keywordProvided || keyword === INDUSTRY_LABELS[campaign.industry];
+  const industryWords = defaultIndustryKeyword ? (INDUSTRY_KEYWORDS[campaign.industry] || []) : [];
+  return [...new Set([keyword, ...keywordParts, ...industryWords].filter((word) => String(word).trim().length >= 2))];
 }
 
 function extractCandidateKeywords(posts, campaign, limit = 2) {
@@ -1198,7 +1201,11 @@ async function processTask(task) {
     try {
       const urlCategoryOverride = task.categoryOverrides[normalizeBlogUrl(url)] || task.categoryOverrides[getBlogId(url)];
       const campaign = urlCategoryOverride
-        ? normalizeCampaign({ ...task.campaign, industry: urlCategoryOverride })
+        ? normalizeCampaign({
+          ...task.campaign,
+          industry: urlCategoryOverride,
+          keyword: task.campaign.keywordProvided ? task.campaign.keyword : '',
+        })
         : task.campaign;
       const result = await analyzeExposurePotential(url, task.mode, {
         ...campaign,
