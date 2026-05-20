@@ -812,7 +812,6 @@ function strengthenEvaluation(result, legacyIndexInput = '') {
   let scorePenalty = 0;
   let gradeCap = null;
 
-  verificationFlags.push('최근 상위노출 검증 미완료');
   if (result.grade === 'S') gradeCap = 'A';
 
   if (dataConfidence.level === '낮음') {
