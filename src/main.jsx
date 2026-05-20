@@ -391,7 +391,11 @@ function App() {
                 <span>{file ? file.name : '엑셀 업로드 · URL/일방문자수 컬럼 지원'}</span>
                 <input type="file" accept=".xlsx,.xls,.csv" onChange={(event) => setFile(event.target.files?.[0] || null)} />
               </label>
-              <p className="cost">빠른 분석: URL당 1크레딧 · 예상 차감 {estimatedQuickCost}크레딧</p>
+              <p className="cost">
+                빠른 분석: URL당 1크레딧 · {file
+                  ? `붙여넣기 ${pastedUrlCount}개 + 파일 URL은 분석 시작 후 계산`
+                  : `예상 차감 ${estimatedQuickCost}크레딧`}
+              </p>
               <button className="primary full" onClick={startBulk} disabled={busy}><Upload size={18} /> 분석 시작</button>
             </div>
 
