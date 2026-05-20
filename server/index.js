@@ -6,8 +6,8 @@ import { DatabaseSync } from 'node:sqlite';
 import cors from 'cors';
 import express from 'express';
 import { XMLParser } from 'fast-xml-parser';
-import JSZip from 'jszip';
 import multer from 'multer';
+import XLSX from 'xlsx';
 
 const app = express();
 const upload = multer({
@@ -418,61 +418,27 @@ function mergeMaps(...maps) {
   return Object.assign({}, ...maps.filter(Boolean));
 }
 
-async function extractUrlsFromWorkbook(buffer) {
-  const zip = await JSZip.loadAsync(buffer);
-  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '' });
-  const found = [];
-  const sharedXml = await zip.file('xl/sharedStrings.xml')?.async('text');
-  const sharedStrings = [];
-  if (sharedXml) {
-    const shared = parser.parse(sharedXml);
-    asArray(shared?.sst?.si).forEach((entry) => sharedStrings.push(readRichText(entry)));
-  }
-  const sheetFiles = Object.keys(zip.files).filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/.test(name));
-  for (const sheetFile of sheetFiles) {
-    const xml = await zip.file(sheetFile).async('text');
-    const sheet = parser.parse(xml);
-    asArray(sheet?.worksheet?.sheetData?.row).forEach((row) => {
-      asArray(row.c).forEach((cell) => {
-        const text = cell.t === 's' ? sharedStrings[Number(cell.v)] : readRichText(cell.is) || cell.v;
-        found.push(...extractUrlsFromText(String(text ?? '')));
-      });
+function extractRowsFromWorkbook(buffer) {
+  const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false });
+  return workbook.SheetNames.flatMap((sheetName) => {
+    const sheet = workbook.Sheets[sheetName];
+    return XLSX.utils.sheet_to_json(sheet, {
+      header: 1,
+      blankrows: false,
+      defval: '',
+      raw: false,
     });
-  }
-  return [...new Set(found)];
+  })
+    .map((row) => row.map((cell) => String(cell ?? '').trim()))
+    .filter((row) => row.some(Boolean));
 }
 
-async function extractRowsFromWorkbook(buffer) {
-  const zip = await JSZip.loadAsync(buffer);
-  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '' });
-  const rows = [];
-  const sharedXml = await zip.file('xl/sharedStrings.xml')?.async('text');
-  const sharedStrings = [];
-  if (sharedXml) {
-    const shared = parser.parse(sharedXml);
-    asArray(shared?.sst?.si).forEach((entry) => sharedStrings.push(readRichText(entry)));
-  }
-  const sheetFiles = Object.keys(zip.files).filter((name) => /^xl\/worksheets\/sheet\d+\.xml$/.test(name));
-  for (const sheetFile of sheetFiles) {
-    const xml = await zip.file(sheetFile).async('text');
-    const sheet = parser.parse(xml);
-    asArray(sheet?.worksheet?.sheetData?.row).forEach((row) => {
-      const cells = asArray(row.c).map((cell) => {
-        const value = cell.t === 's' ? sharedStrings[Number(cell.v)] : readRichText(cell.is) || cell.v;
-        return String(value ?? '').trim();
-      });
-      if (cells.some(Boolean)) rows.push(cells);
-    });
-  }
-  return rows;
-}
-
-async function extractUrlsFromUpload(file) {
+function extractUrlsFromUpload(file) {
   const name = file.originalname || '';
   if (/\.csv$/i.test(name) || file.mimetype === 'text/csv') {
     return extractUrlsFromText(file.buffer.toString('utf8'));
   }
-  return extractUrlsFromWorkbook(file.buffer);
+  return [...new Set(extractRowsFromWorkbook(file.buffer).flatMap((row) => extractUrlsFromText(row.join(' '))))];
 }
 
 async function extractUploadSignals(file) {
@@ -480,7 +446,7 @@ async function extractUploadSignals(file) {
   const name = file.originalname || '';
   const rows = /\.csv$/i.test(name) || file.mimetype === 'text/csv'
     ? extractRowsFromText(file.buffer.toString('utf8'))
-    : await extractRowsFromWorkbook(file.buffer);
+    : extractRowsFromWorkbook(file.buffer);
   return {
     urls: [...new Set(rows.flatMap((row) => extractUrlsFromText(row.join(' '))))],
     dailyVisitors: extractDailyVisitorsFromRows(rows),
@@ -490,12 +456,6 @@ async function extractUploadSignals(file) {
 function asArray(value) {
   if (!value) return [];
   return Array.isArray(value) ? value : [value];
-}
-
-function readRichText(entry) {
-  if (!entry) return '';
-  if (typeof entry.t === 'string' || typeof entry.t === 'number') return String(entry.t);
-  return asArray(entry.r).map((run) => run.t ?? '').join('');
 }
 
 function hash(input) {

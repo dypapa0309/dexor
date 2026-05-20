@@ -24,16 +24,15 @@
   "dependencies": {
     "@vitejs/plugin-react": "^5.0.4",
     "concurrently": "^9.2.1",
-    "vite": "^7.1.9",
-    "typescript": "^5.9.3",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "fast-xml-parser": "^5.3.0",
+    "lucide-react": "^0.545.0",
+    "multer": "^2.0.2",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
-    "lucide-react": "^0.545.0",
-    "express": "^5.1.0",
-    "cors": "^2.8.5",
-    "multer": "^2.0.2",
-    "jszip": "^3.10.1",
-    "fast-xml-parser": "^5.3.0"
-  },
-  "devDependencies": {}
+    "typescript": "^5.9.3",
+    "vite": "^7.1.9",
+    "xlsx": "^0.18.5"
+  }
 }
