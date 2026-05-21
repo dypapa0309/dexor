@@ -548,7 +548,7 @@ function hash(input) {
 
 function gradeFromScore(score) {
   if (score >= 90) return 'S';
-  if (score >= 75) return 'A';
+  if (score >= 70) return 'A';
   if (score >= 60) return 'B';
   if (score >= 40) return 'C';
   return 'D';
@@ -1067,7 +1067,7 @@ async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {})
     : Math.round(clamp(rssScore + recentKeywordCoverage * 0.05 + derivedKeywordBonus - riskPenalty));
   const dailyVisitorAverage = dailyVisitorSignal?.estimatedAverage || 0;
   const strongRecentTopicExposure = topicFit >= 35
-    && (recentKeywordCheck.recentFiveMatchedCount >= 3 || recentKeywordCheck.matchedCount >= 6);
+    && (recentKeywordCheck.recentFiveMatchedCount >= 3 || recentKeywordCheck.matchedCount >= 5);
   const severeExposureRisk = Boolean(signals.sourceStatus === 'limited'
     || latestPostDays > 45
     || adRatio >= 65
