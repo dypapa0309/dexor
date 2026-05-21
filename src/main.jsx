@@ -358,7 +358,7 @@ function App() {
       <section className="headline">
         <div>
           <h1>캠페인 글이 노출될 블로그를 먼저 고릅니다</h1>
-          <p>업종과 핵심 키워드를 기준으로 블로그의 주제 신뢰도, 문서 적합도, 키워드 경쟁도를 추정합니다.</p>
+          <p>분석 기준과 세부 검색어를 바탕으로 블로그의 주제 신뢰도, 문서 적합도, 노출 가능성을 추정합니다.</p>
         </div>
         {me.user ? (
           <div className="summary-bar">
@@ -379,11 +379,11 @@ function App() {
             </div>
 
             <div className="input-block">
-              <label>업종 범위</label>
+              <label>분석 기준</label>
               <select value={industry} onChange={(event) => setIndustry(event.target.value)}>
                 {industryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
               </select>
-              <label>세부 키워드</label>
+              <label>세부 검색어</label>
               <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="비워두면 넓게 분석" />
               <label>블로그 URL</label>
               <textarea value={bulkText} onChange={(event) => setBulkText(event.target.value)} placeholder="네이버 블로그 URL을 하나 이상 붙여넣으세요. URL 옆에 일방문자수를 함께 넣으면 랭크 기준에 반영됩니다." />
@@ -637,11 +637,11 @@ function StrengthTestPage({
           </div>
         </div>
         <div className="input-block">
-          <label>업종 범위</label>
+          <label>분석 기준</label>
           <select value={industry} onChange={(event) => onIndustry(event.target.value)}>
             {industryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
           </select>
-          <label>세부 키워드</label>
+          <label>세부 검색어</label>
           <input value={keyword} onChange={(event) => onKeyword(event.target.value)} placeholder="비워두면 넓게 분석" />
           <label>테스트 URL</label>
           <textarea value={testUrls} onChange={(event) => onUrls(event.target.value)} placeholder="네이버 블로그 URL을 줄바꿈으로 붙여넣으세요. URL, 일방문자수 형식도 가능합니다." />
@@ -677,7 +677,7 @@ function StrengthResults({ rows }) {
           <header>
             <div>
               <b>{item.url}</b>
-              <span>{item.category} · {item.campaign?.keyword || '-'} · 기존 지수 {item.legacyIndex || '없음'}</span>
+              <span>판정 카테고리 {item.category} · 세부 검색어 {item.campaign?.keyword || '없음'} · 기존 지수 {item.legacyIndex || '없음'}</span>
             </div>
             <div className="grade-compare">
               <span className="badge">{item.originalGrade} {item.originalScore}</span>
@@ -913,7 +913,7 @@ function DetailModal({ result, onClose }) {
           <section>
             <h3>주의 이유</h3>
             <ul>{(result.cautionReasons || []).map((reason) => <li key={reason}>{reason}</li>)}</ul>
-            {result.campaign && <p className="risk">캠페인: {result.campaign.industryLabel} · {result.campaign.keyword}</p>}
+            {result.campaign && <p className="risk">적용 기준: {result.campaign.industryLabel} · 세부 검색어 {result.campaign.keyword || '없음'}</p>}
             <p className="risk">
               일방문자수: {result.dailyVisitorSignal
                 ? `${result.dailyVisitorSignal.label} 평균 ${result.dailyVisitorSignal.estimatedAverage}명 (${result.dailyVisitorSignal.estimatedMin}-${result.dailyVisitorSignal.estimatedMax})`
