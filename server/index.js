@@ -1063,7 +1063,23 @@ async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {})
   const exposureScore = postSignals
     ? Math.round(clamp(postSignals.postFit * 0.6 + cRankFit * 0.14 + diaFit * 0.12 + competitorSimilarity * 0.07 + activityFit * 0.04 + recentKeywordCoverage * 0.03 + derivedKeywordBonus - riskPenalty * 0.35))
     : Math.round(clamp(rssScore + recentKeywordCoverage * 0.05 + derivedKeywordBonus - riskPenalty));
-  const grade = minGrade(gradeFromScore(exposureScore), gradeCap);
+  const dailyVisitorAverage = dailyVisitorSignal?.estimatedAverage || 0;
+  const strongRecentTopicExposure = recentKeywordCheck.recentFiveMatchedCount >= 2 || recentKeywordCheck.matchedCount >= 4;
+  const severeExposureRisk = Boolean(signals.sourceStatus === 'limited'
+    || latestPostDays > 45
+    || adRatio >= 65
+    || topicFit < 25
+    || (dailyVisitorSignal && dailyVisitorAverage < DAILY_VISITOR_MINIMUMS.b)
+    || (postSignals && postSignals.topicFit < 25));
+  const exposureSignal = {
+    status: strongRecentTopicExposure && !severeExposureRisk ? 'strong' : 'normal',
+    label: strongRecentTopicExposure && !severeExposureRisk ? '최근 주제 노출 강함' : '종합 점수 기준',
+    recentFiveMatchedCount: recentKeywordCheck.recentFiveMatchedCount,
+    matchedCount: recentKeywordCheck.matchedCount,
+    severeExposureRisk,
+  };
+  const scoreGrade = gradeFromScore(exposureScore);
+  const grade = exposureSignal.status === 'strong' && !gradeCap ? 'S' : minGrade(scoreGrade, gradeCap);
   const recommendation = ['S', 'A'].includes(grade)
     ? '체험 후기형 원고'
     : grade === 'B'
@@ -1118,6 +1134,7 @@ async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {})
       recentKeywordCheck,
       derivedKeywords,
       dailyVisitorSignal,
+      exposureSignal,
       sourceStatus: postSignals && rssSignals ? 'post-view+public-rss' : postSignals ? 'post-only' : signals.sourceStatus,
       recommendation,
       cautionReasons,
