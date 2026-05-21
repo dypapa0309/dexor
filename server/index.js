@@ -617,7 +617,9 @@ function keywordSearchTerms(campaign) {
   const keyword = String(campaign.keyword || '').trim();
   const keywordParts = keyword.split(/[\s,/·|]+/).filter((word) => word.length >= 2);
   const defaultIndustryKeyword = !campaign.keywordProvided || keyword === INDUSTRY_LABELS[campaign.industry];
-  const industryWords = defaultIndustryKeyword ? (INDUSTRY_KEYWORDS[campaign.industry] || []) : [];
+  const industryWords = defaultIndustryKeyword
+    ? (INDUSTRY_KEYWORDS[campaign.industry] || []).filter((word) => !['후기', '리뷰'].includes(word))
+    : [];
   return [...new Set([keyword, ...keywordParts, ...industryWords].filter((word) => String(word).trim().length >= 2))];
 }
 
@@ -1064,7 +1066,8 @@ async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {})
     ? Math.round(clamp(postSignals.postFit * 0.6 + cRankFit * 0.14 + diaFit * 0.12 + competitorSimilarity * 0.07 + activityFit * 0.04 + recentKeywordCoverage * 0.03 + derivedKeywordBonus - riskPenalty * 0.35))
     : Math.round(clamp(rssScore + recentKeywordCoverage * 0.05 + derivedKeywordBonus - riskPenalty));
   const dailyVisitorAverage = dailyVisitorSignal?.estimatedAverage || 0;
-  const strongRecentTopicExposure = recentKeywordCheck.recentFiveMatchedCount >= 2 || recentKeywordCheck.matchedCount >= 4;
+  const strongRecentTopicExposure = topicFit >= 35
+    && (recentKeywordCheck.recentFiveMatchedCount >= 3 || recentKeywordCheck.matchedCount >= 6);
   const severeExposureRisk = Boolean(signals.sourceStatus === 'limited'
     || latestPostDays > 45
     || adRatio >= 65
