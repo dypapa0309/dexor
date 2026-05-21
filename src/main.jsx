@@ -18,6 +18,7 @@ const API_BASE = `${API}/api`;
 const gradeLabels = { S: '바로 섭외 추천', A: '섭외 가능', B: '조건부 섭외', C: '우선순위 낮음', D: '섭외 비추천' };
 const gradeOrder = { S: 0, A: 1, B: 2, C: 3, D: 4 };
 const industryOptions = [
+  { value: 'auto', label: '자동' },
   { value: 'food', label: '맛집' },
   { value: 'beauty', label: '뷰티' },
   { value: 'travel', label: '여행' },
@@ -49,7 +50,7 @@ function App() {
   const [packages, setPackages] = useState([]);
   const [payments, setPayments] = useState([]);
   const [bulkText, setBulkText] = useState('');
-  const [industry, setIndustry] = useState('food');
+  const [industry, setIndustry] = useState('auto');
   const [keyword, setKeyword] = useState('');
   const [file, setFile] = useState(null);
   const [job, setJob] = useState(null);
@@ -378,12 +379,12 @@ function App() {
             </div>
 
             <div className="input-block">
-              <label>캠페인 업종</label>
+              <label>업종 범위</label>
               <select value={industry} onChange={(event) => setIndustry(event.target.value)}>
                 {industryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
               </select>
-              <label>핵심 키워드</label>
-              <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="예: 강남 맛집, 홍대 네일, 제주 숙소" />
+              <label>세부 키워드</label>
+              <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="비워두면 넓게 분석" />
               <label>블로그 URL</label>
               <textarea value={bulkText} onChange={(event) => setBulkText(event.target.value)} placeholder="네이버 블로그 URL을 하나 이상 붙여넣으세요. URL 옆에 일방문자수를 함께 넣으면 랭크 기준에 반영됩니다." />
               <label className="file-drop">
@@ -636,12 +637,12 @@ function StrengthTestPage({
           </div>
         </div>
         <div className="input-block">
-          <label>캠페인 업종</label>
+          <label>업종 범위</label>
           <select value={industry} onChange={(event) => onIndustry(event.target.value)}>
             {industryOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
           </select>
-          <label>핵심 키워드</label>
-          <input value={keyword} onChange={(event) => onKeyword(event.target.value)} placeholder="예: 여성 패션 코디" />
+          <label>세부 키워드</label>
+          <input value={keyword} onChange={(event) => onKeyword(event.target.value)} placeholder="비워두면 넓게 분석" />
           <label>테스트 URL</label>
           <textarea value={testUrls} onChange={(event) => onUrls(event.target.value)} placeholder="네이버 블로그 URL을 줄바꿈으로 붙여넣으세요. URL, 일방문자수 형식도 가능합니다." />
           <label>기존 지수 매칭</label>

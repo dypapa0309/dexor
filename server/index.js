@@ -65,6 +65,9 @@ const DAILY_VISITOR_MINIMUMS = {
   a: 200,
   b: 80,
 };
+const AUTO_INDUSTRY_KEYWORDS = [...new Set(Object.values(INDUSTRY_KEYWORDS).flat())];
+INDUSTRY_KEYWORDS.auto = AUTO_INDUSTRY_KEYWORDS;
+INDUSTRY_LABELS.auto = '자동';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const appRoot = join(__dirname, '..');
@@ -572,9 +575,9 @@ function minGrade(...grades) {
 }
 
 function normalizeCampaign(input = {}) {
-  const industry = INDUSTRY_LABELS[input.industry] ? input.industry : 'food';
+  const industry = INDUSTRY_LABELS[input.industry] ? input.industry : 'auto';
   const rawKeyword = String(input.keyword || '').trim();
-  const keyword = (rawKeyword || INDUSTRY_LABELS[industry]).slice(0, 40) || INDUSTRY_LABELS[industry];
+  const keyword = (rawKeyword || (industry === 'auto' ? '' : INDUSTRY_LABELS[industry])).slice(0, 40);
   return { industry, industryLabel: INDUSTRY_LABELS[industry], keyword, keywordProvided: rawKeyword.length > 0 };
 }
 
@@ -1088,12 +1091,15 @@ async function analyzeExposurePotential(url, mode = 'quick', campaignInput = {})
     : grade === 'B'
       ? '롱테일 키워드 후기'
       : '브랜드 인지도 보조 캠페인';
+  const campaignScope = campaign.keyword
+    ? `${campaign.industryLabel}·${campaign.keyword}`
+    : `${campaign.industryLabel} 전체`;
   const reasons = [
     postSignals
       ? `입력된 개별 포스트 "${postSignals.title || postSignals.logNo}" 본문을 직접 읽어 포스트 적합도 ${postSignals.postFit}점을 반영했습니다.`
-      : `${campaign.industryLabel}·${campaign.keyword} 맥락에서 최근 ${recentPostCount}개 글이 공개 신호로 확인되어 노출 가능성을 추정했습니다.`,
+      : `${campaignScope} 맥락에서 최근 ${recentPostCount}개 글이 공개 신호로 확인되어 노출 가능성을 추정했습니다.`,
     `블로그 최근 글 기준 주제 적합도 ${topicFit}점, 문서 적합도 ${diaFit}점으로 블로그 전체 흐름을 보조 반영했습니다.`,
-    `${recentKeywordCheck.label}: 최근 ${recentKeywordCheck.checkedCount}개 중 ${recentKeywordCheck.matchedCount}개, 최근 5개 중 ${recentKeywordCheck.recentFiveMatchedCount}개가 "${campaign.keyword}" 관련 표현을 포함했습니다.`,
+    `${recentKeywordCheck.label}: 최근 ${recentKeywordCheck.checkedCount}개 중 ${recentKeywordCheck.matchedCount}개, 최근 5개 중 ${recentKeywordCheck.recentFiveMatchedCount}개가 "${campaign.keyword || campaign.industryLabel}" 관련 표현을 포함했습니다.`,
     derivedKeywords.length
       ? `최근 5개 글에서 보조 검토 키워드로 ${derivedKeywords.map((item) => item.keyword).join(', ')}를 추렸습니다.`
       : '최근 5개 글에서 뚜렷한 보조 검토 키워드는 추출되지 않았습니다.',
